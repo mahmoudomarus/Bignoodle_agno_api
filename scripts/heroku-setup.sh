@@ -16,8 +16,8 @@ if [ -n "$DATABASE_URL" ]; then
   DB_PORT=$(echo $DATABASE_URL | sed -E 's/^[^:]+:\/\/[^@]+@[^:]+:([^\/]+)\/.*/\1/')
   DB_DATABASE=$(echo $DATABASE_URL | sed -E 's/^[^:]+:\/\/[^@]+@[^:]+:[^\/]+\/([^?]+).*/\1/')
   
-  # Set environment variables for application
-  export DB_DRIVER="${DB_DRIVER}+psycopg"
+  # Fix: Use postgresql instead of postgres+psycopg since that's causing issues
+  export DB_DRIVER="postgresql"
   export DB_USER="${DB_USER}"
   export DB_PASS="${DB_PASS}"
   export DB_HOST="${DB_HOST}"
