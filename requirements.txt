@@ -82,4 +82,5 @@ uvloop==0.21.0
 watchfiles==1.0.5
 websockets==15.0.1
 yfinance==0.2.59
+yarl==1.10.0
 tenacity==8.2.3
