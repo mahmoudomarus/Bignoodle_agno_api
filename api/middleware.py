@@ -12,10 +12,13 @@ def setup_cors_middleware(app: FastAPI) -> None:
             "https://bignoodle-agent-ui-1.onrender.com",
             "https://bignoodle-agent-ui.onrender.com",
             "https://deepresearch.bignoodle.com",
+            "http://deepresearch.bignoodle.com",
             "http://localhost:3000",
             "https://app.agno.com"
         ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["*"],
+        max_age=600,  # Cache preflight requests for 10 minutes
     ) 
