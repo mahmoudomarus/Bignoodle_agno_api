@@ -30,6 +30,9 @@ class ApiSettings(BaseSettings):
         valid_cors.append("http://localhost")
         # Add localhost:3000 to cors to allow requests from local Agent UI.
         valid_cors.append("http://localhost:3000")
+        # Add BigNoodle Agent UI URLs
+        valid_cors.append("https://bignoodle-agent-ui-1.onrender.com")
+        valid_cors.append("https://bignoodle-agent-ui.onrender.com")
 
         return valid_cors
 
