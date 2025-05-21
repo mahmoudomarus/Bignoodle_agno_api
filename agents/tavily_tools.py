@@ -6,9 +6,6 @@ import requests
 
 from agents.base_tools import Tool, ToolType, ToolTypeArgs
 
-# For progress tracking
-from agents.progress_tracker import ResearchProgressTracker
-
 
 class TavilyTools(Tool):
     """
@@ -18,28 +15,26 @@ class TavilyTools(Tool):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        search_depth: str = "basic",
+        search_depth: str = "advanced",
         max_results: int = 15,
         include_domains: Optional[List[str]] = None,
         exclude_domains: Optional[List[str]] = None,
         include_answer: bool = True,
         include_raw_content: bool = True,
         include_images: bool = False,
-        progress_tracker: Optional[ResearchProgressTracker] = None,
     ):
         """
         Initialize the TavilyTools class.
 
         Args:
             api_key: The Tavily API key. If not provided, it will be read from environment variables.
-            search_depth: The depth of the search. Either "basic" or "advanced" or "comprehensive".
+            search_depth: The depth of the search. Either "basic" or "advanced".
             max_results: The maximum number of results to return.
             include_domains: A list of domains to include in the search.
             exclude_domains: A list of domains to exclude from the search.
             include_answer: Whether to include an answer in the response.
             include_raw_content: Whether to include raw content in the response.
             include_images: Whether to include images in the response.
-            progress_tracker: Optional progress tracker for research updates
         """
         # Use provided API key, or try environment variable, or use fallback
         self.api_key = api_key or os.environ.get("TAVILY_API_KEY") or "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"
@@ -51,7 +46,6 @@ class TavilyTools(Tool):
         self.include_answer = include_answer
         self.include_raw_content = include_raw_content
         self.include_images = include_images
-        self.progress_tracker = progress_tracker
         
         tool_types = [
             ToolType(
@@ -121,64 +115,60 @@ class TavilyTools(Tool):
         Returns:
             Search results
         """
-        # Update progress tracker if available
-        if self.progress_tracker:
-            self.progress_tracker.add_search_query(query, "tavily_search")
-            
+        depth = search_depth or self.search_depth
+        
         try:
-            search_depth = search_depth or self.search_depth
+            # Prepare the payload for the Tavily API
+            payload = {
+                "query": query,
+                "search_depth": depth,
+                "max_results": self.max_results,
+                "include_answer": self.include_answer,
+                "include_raw_content": self.include_raw_content,
+                "include_images": self.include_images,
+            }
             
+            if self.include_domains:
+                payload["include_domains"] = self.include_domains
+            if self.exclude_domains:
+                payload["exclude_domains"] = self.exclude_domains
+            
+            # Make the API request
             response = requests.post(
                 "https://api.tavily.com/search",
-                headers={
-                    "Content-Type": "application/json",
-                    "X-API-Key": self.api_key
-                },
-                json={
-                    "query": query,
-                    "search_depth": search_depth,
-                    "max_results": self.max_results,
-                    "include_domains": self.include_domains,
-                    "exclude_domains": self.exclude_domains,
-                    "include_answer": self.include_answer,
-                    "include_raw_content": self.include_raw_content,
-                    "include_images": self.include_images
-                }
+                headers={"content-type": "application/json", "x-api-key": self.api_key},
+                json=payload,
             )
             
+            # Check for errors
             response.raise_for_status()
+            
+            # Parse the response
             result = response.json()
             
-            # Format results
-            formatted_results = [
-                {
-                    "title": r.get("title", ""),
-                    "content": r.get("content", ""),
-                    "url": r.get("url", ""),
-                    "score": r.get("score", 0),
-                    "raw_content": r.get("raw_content", "") if self.include_raw_content else ""
-                }
-                for r in result.get("results", [])
-            ]
-            
-            # Update progress tracker if available
-            if self.progress_tracker and result.get("results"):
-                for r in result.get("results", []):
-                    if "title" in r and "url" in r:
-                        self.progress_tracker.add_source(r["title"], r["url"])
+            # Format the results
+            formatted_results = []
+            for item in result.get("results", []):
+                formatted_results.append({
+                    "title": item.get("title", "No title"),
+                    "url": item.get("url", ""),
+                    "content": item.get("content", "No content available"),
+                    "score": item.get("score", 0),
+                    "source": item.get("source", "Unknown source"),
+                })
             
             return {
                 "answer": result.get("answer", ""),
-                "results": formatted_results
+                "results": formatted_results,
+                "result_count": len(formatted_results),
+                "search_depth": depth,
+                "query": query,
             }
         
         except requests.exceptions.RequestException as e:
-            # Log the error and provide a fallback response if API fails
-            if self.progress_tracker:
-                self.progress_tracker.add_status_update(f"Search API error: {str(e)}", None)
             return {
                 "error": f"Error searching Tavily: {str(e)}",
-                "results": []
+                "query": query,
             }
     
     def search_news(self, query: str, max_results: Optional[int] = None) -> Dict[str, Any]:
@@ -192,48 +182,44 @@ class TavilyTools(Tool):
         Returns:
             News search results
         """
-        # Update progress tracker if available
-        if self.progress_tracker:
-            self.progress_tracker.add_search_query(query, "tavily_news_search")
-            
         try:
+            # Prepare the payload for the Tavily API
+            payload = {
+                "query": query,
+                "search_depth": "advanced",  # Use advanced depth for news
+                "max_results": max_results or self.max_results,
+                "include_domains": self.include_domains,
+                "exclude_domains": self.exclude_domains,
+                "include_answer": False,  # No answer needed for news
+                "include_raw_content": self.include_raw_content,
+                "include_images": True,  # Include images for news
+                "search_type": "news",  # Specify news search type
+            }
+            
+            # Make the API request
             response = requests.post(
                 "https://api.tavily.com/search",
-                headers={
-                    "Content-Type": "application/json",
-                    "X-API-Key": self.api_key
-                },
-                json={
-                    "query": query,
-                    "search_depth": self.search_depth,
-                    "max_results": max_results or self.max_results,
-                    "include_domains": self.include_domains,
-                    "exclude_domains": self.exclude_domains,
-                    "search_type": "news"
-                }
+                headers={"content-type": "application/json", "x-api-key": self.api_key},
+                json=payload,
             )
             
+            # Check for errors
             response.raise_for_status()
+            
+            # Parse the response
             result = response.json()
             
-            # Format news results
-            news_results = [
-                {
-                    "title": r.get("title", ""),
-                    "content": r.get("content", ""),
-                    "url": r.get("url", ""),
-                    "published_date": r.get("published_date", ""),
-                    "source": r.get("source", "Unknown source"),
-                    "image_url": r.get("image_url", "")
-                }
-                for r in result.get("results", [])
-            ]
-            
-            # Update progress tracker if available
-            if self.progress_tracker and result.get("results"):
-                for r in result.get("results", []):
-                    if "title" in r and "url" in r:
-                        self.progress_tracker.add_source(r["title"], r["url"])
+            # Format the results
+            news_results = []
+            for item in result.get("results", []):
+                news_results.append({
+                    "title": item.get("title", "No title"),
+                    "url": item.get("url", ""),
+                    "content": item.get("content", "No content available"),
+                    "published_date": item.get("published_date", "Unknown date"),
+                    "source": item.get("source", "Unknown source"),
+                    "image_url": item.get("image_url", ""),
+                })
             
             return {
                 "news_results": news_results,
@@ -242,9 +228,6 @@ class TavilyTools(Tool):
             }
         
         except requests.exceptions.RequestException as e:
-            # Log the error and provide a fallback response if API fails
-            if self.progress_tracker:
-                self.progress_tracker.add_status_update(f"Search API error: {str(e)}", None)
             return {
                 "error": f"Error searching Tavily News: {str(e)}",
                 "query": query,
@@ -269,10 +252,6 @@ class TavilyTools(Tool):
         Returns:
             Topic search results
         """
-        # Update progress tracker if available
-        if self.progress_tracker:
-            self.progress_tracker.add_search_query(topic, "tavily_topic_search")
-            
         try:
             # Process domain parameters
             include_list = [domain.strip() for domain in include_domains.split(",") if domain.strip()]
@@ -326,12 +305,6 @@ class TavilyTools(Tool):
                     "relevance_score": item.get("score", 0),
                 })
             
-            # Update progress tracker if available
-            if self.progress_tracker and formatted_results:
-                for result in formatted_results:
-                    if "title" in result and "url" in result:
-                        self.progress_tracker.add_source(result["title"], result["url"])
-            
             return {
                 "topic": topic,
                 "answer": result.get("answer", ""),
@@ -343,9 +316,6 @@ class TavilyTools(Tool):
             }
         
         except requests.exceptions.RequestException as e:
-            # Log the error and provide a fallback response if API fails
-            if self.progress_tracker:
-                self.progress_tracker.add_status_update(f"Search API error: {str(e)}", None)
             return {
                 "error": f"Error searching Tavily Topic: {str(e)}",
                 "topic": topic,

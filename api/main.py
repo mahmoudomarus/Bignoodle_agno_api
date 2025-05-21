@@ -1,32 +1,31 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-import os
-import sys
-import traceback
+from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
 
-from api.middleware import setup_cors
-from api.playground import router as playground_router
-from api.research import router as research_router
+from api.routes.v1_router import v1_router
+from api.settings import api_settings
+from api.middleware import setup_cors_middleware
 
-app = FastAPI()
 
-# Setup CORS
-setup_cors(app)
+def create_app() -> FastAPI:
+    """Create a FastAPI App"""
 
-# Include routers
-app.include_router(playground_router, prefix="/v1/playground")
-app.include_router(research_router, prefix="/v1/research")
-
-@app.get("/v1/status")
-async def status():
-    return {"status": "healthy"}
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """Global exception handler for the application."""
-    error_detail = traceback.format_exc()
-    return JSONResponse(
-        status_code=500,
-        content={"detail": str(exc), "traceback": error_detail},
+    # Create FastAPI App
+    app: FastAPI = FastAPI(
+        title=api_settings.title,
+        version=api_settings.version,
+        docs_url="/docs" if api_settings.docs_enabled else None,
+        redoc_url="/redoc" if api_settings.docs_enabled else None,
+        openapi_url="/openapi.json" if api_settings.docs_enabled else None,
     )
+
+    # Add CORS middleware first (before routers)
+    setup_cors_middleware(app)
+
+    # Add v1 router
+    app.include_router(v1_router)
+
+    return app
+
+
+# Create a FastAPI app
+app = create_app()

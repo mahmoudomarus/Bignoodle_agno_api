@@ -1,8 +1,6 @@
 from textwrap import dedent
 from typing import Dict, List, Optional, Any
 import json
-import time
-import uuid
 
 from agno.agent import Agent
 from agno.memory.v2.db.postgres import PostgresMemoryDb
@@ -15,210 +13,6 @@ from agents.base_tools import Tool, ToolType
 
 from agents.tavily_tools import TavilyTools
 from db.session import db_url
-
-# Global progress tracking dict
-# Maps session_id to progress info
-research_progress = {}
-
-class ResearchProgressTracker:
-    """
-    Tracks progress of research tasks and exposes methods to update and retrieve status.
-    """
-    
-    @staticmethod
-    def initialize_progress(session_id: str, research_topic: str) -> str:
-        """Initialize a new progress tracker for a research session"""
-        progress_id = str(uuid.uuid4())
-        research_progress[session_id] = {
-            "id": progress_id,
-            "topic": research_topic,
-            "start_time": time.time(),
-            "status": "initializing",
-            "completion_percentage": 0,
-            "current_stage": "Planning research approach",
-            "searches_performed": [],
-            "tasks_created": [],
-            "tasks_completed": [],
-            "sections_completed": [],
-            "latest_update": time.time(),
-            "last_message": "Starting comprehensive research"
-        }
-        return progress_id
-    
-    @staticmethod
-    def update_progress(session_id: str, update_data: Dict[str, Any]) -> None:
-        """Update progress for a research session"""
-        if session_id not in research_progress:
-            return
-        
-        progress = research_progress[session_id]
-        progress.update(update_data)
-        progress["latest_update"] = time.time()
-    
-    @staticmethod
-    def add_search(session_id: str, query: str, tool: str, result_count: int) -> None:
-        """Record a search that was performed"""
-        if session_id not in research_progress:
-            return
-        
-        progress = research_progress[session_id]
-        progress["searches_performed"].append({
-            "timestamp": time.time(),
-            "query": query,
-            "tool": tool,
-            "result_count": result_count
-        })
-        progress["latest_update"] = time.time()
-    
-    @staticmethod
-    def add_task(session_id: str, task_id: str, description: str) -> None:
-        """Record a research task that was created"""
-        if session_id not in research_progress:
-            return
-        
-        progress = research_progress[session_id]
-        progress["tasks_created"].append({
-            "timestamp": time.time(),
-            "task_id": task_id,
-            "description": description
-        })
-        progress["latest_update"] = time.time()
-    
-    @staticmethod
-    def complete_task(session_id: str, task_id: str) -> None:
-        """Mark a research task as completed"""
-        if session_id not in research_progress:
-            return
-        
-        progress = research_progress[session_id]
-        progress["tasks_completed"].append({
-            "timestamp": time.time(),
-            "task_id": task_id
-        })
-        
-        # Update completion percentage based on tasks
-        if progress["tasks_created"]:
-            completion = len(progress["tasks_completed"]) / len(progress["tasks_created"])
-            progress["completion_percentage"] = int(70 * completion)  # Tasks account for 70% of work
-        
-        progress["latest_update"] = time.time()
-    
-    @staticmethod
-    def complete_section(session_id: str, section_name: str) -> None:
-        """Mark a report section as completed"""
-        if session_id not in research_progress:
-            return
-        
-        progress = research_progress[session_id]
-        progress["sections_completed"].append({
-            "timestamp": time.time(),
-            "section_name": section_name
-        })
-        progress["latest_update"] = time.time()
-    
-    @staticmethod
-    def set_stage(session_id: str, stage: str, percentage: Optional[int] = None) -> None:
-        """Update the current research stage"""
-        if session_id not in research_progress:
-            return
-        
-        progress = research_progress[session_id]
-        progress["current_stage"] = stage
-        if percentage is not None:
-            progress["completion_percentage"] = percentage
-        progress["latest_update"] = time.time()
-        progress["last_message"] = stage
-    
-    @staticmethod
-    def get_progress(session_id: str) -> Dict[str, Any]:
-        """Get the current progress for a research session"""
-        if session_id not in research_progress:
-            return {"error": "No progress data for this session"}
-        
-        return research_progress[session_id]
-    
-    @staticmethod
-    def finalize(session_id: str) -> None:
-        """Mark research as complete"""
-        if session_id not in research_progress:
-            return
-        
-        progress = research_progress[session_id]
-        progress["status"] = "completed"
-        progress["completion_percentage"] = 100
-        progress["current_stage"] = "Research completed"
-        progress["latest_update"] = time.time()
-        progress["last_message"] = "Research report completed"
-
-
-class ProgressTrackingTavilyTools(TavilyTools):
-    """
-    Extended version of TavilyTools that tracks search progress.
-    """
-    
-    def __init__(self, session_id: Optional[str] = None, **kwargs):
-        super().__init__(**kwargs)
-        self.session_id = session_id
-    
-    def search(self, query: str, search_depth: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Search with Tavily and track the search in progress.
-        """
-        result = super().search(query, search_depth)
-        
-        if self.session_id:
-            ResearchProgressTracker.add_search(
-                self.session_id, 
-                query, 
-                "tavily_search", 
-                result.get("result_count", 0)
-            )
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                f"Searching for information on: {query}",
-            )
-        
-        return result
-    
-    def search_news(self, query: str, max_results: Optional[int] = None) -> Dict[str, Any]:
-        """
-        Search news with Tavily and track the search in progress.
-        """
-        result = super().search_news(query, max_results)
-        
-        if self.session_id:
-            ResearchProgressTracker.add_search(
-                self.session_id, 
-                query, 
-                "tavily_news_search", 
-                result.get("result_count", 0)
-            )
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                f"Searching for news articles about: {query}",
-            )
-        
-        return result
-    
-    def search_topic(self, topic: str, include_domains: str = "", exclude_domains: str = "", time_period: str = "recent") -> Dict[str, Any]:
-        """
-        Perform a topic search with Tavily and track the search in progress.
-        """
-        result = super().search_topic(topic, include_domains, exclude_domains, time_period)
-        
-        if self.session_id:
-            ResearchProgressTracker.add_search(
-                self.session_id, 
-                topic, 
-                "tavily_topic_search", 
-                result.get("result_count", 0)
-            )
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                f"Researching topic in depth: {topic}",
-            )
-        
-        return result
 
 
 class AdvancedReasoningTool(Tool):
@@ -640,116 +434,7 @@ class SupervisorToolKit(Tool):
         }
 
 
-class ProgressTrackingSupervisorToolKit(SupervisorToolKit):
-    """
-    Extended version of SupervisorToolKit that tracks research progress.
-    """
-    
-    def __init__(self, create_researcher_fn: callable, session_id: Optional[str] = None, **kwargs):
-        super().__init__(create_researcher_fn, **kwargs)
-        self.session_id = session_id
-    
-    def create_research_task(self, task_id: str, research_question: str, additional_instructions: str = "", search_depth: str = "advanced") -> Dict[str, Any]:
-        """
-        Create a research task and track it in progress.
-        """
-        result = super().create_research_task(task_id, research_question, additional_instructions, search_depth)
-        
-        if self.session_id and result.get("status") == "success":
-            ResearchProgressTracker.add_task(
-                self.session_id,
-                task_id,
-                research_question
-            )
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                f"Created research task: {research_question}",
-            )
-        
-        return result
-    
-    def execute_research_task(self, task_id: str) -> Dict[str, Any]:
-        """
-        Execute a research task and track its completion.
-        """
-        if self.session_id:
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                f"Executing research task {task_id}",
-            )
-            
-        result = super().execute_research_task(task_id)
-        
-        if self.session_id and result.get("status") == "success":
-            ResearchProgressTracker.complete_task(
-                self.session_id,
-                task_id
-            )
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                f"Completed research task {task_id}",
-            )
-        
-        return result
-    
-    def generate_research_report(self, title: str, sections: str, format_style: str = "academic", include_visualizations: bool = True) -> Dict[str, Any]:
-        """
-        Generate a research report and track its completion.
-        """
-        if self.session_id:
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                "Generating final research report",
-                90  # Report generation is near the end
-            )
-            
-        result = super().generate_research_report(title, sections, format_style, include_visualizations)
-        
-        if self.session_id and result.get("status") == "success":
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                "Finalizing research report formatting",
-                95
-            )
-            
-            # Extract section names from the JSON
-            try:
-                sections_data = json.loads(sections)
-                for section in sections_data:
-                    if "heading" in section:
-                        ResearchProgressTracker.complete_section(
-                            self.session_id,
-                            section["heading"]
-                        )
-            except (json.JSONDecodeError, KeyError):
-                pass
-        
-        return result
-    
-    def research_planning(self, topic: str, objective: str, depth: str = "comprehensive") -> Dict[str, Any]:
-        """
-        Create a research plan and track it in progress.
-        """
-        if self.session_id:
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                f"Planning research approach for: {topic}",
-                10  # Planning is early in the process
-            )
-            
-        result = super().research_planning(topic, objective, depth)
-        
-        if self.session_id:
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                "Research plan created, preparing to gather information",
-                15
-            )
-        
-        return result
-
-
-def create_progress_tracking_researcher(
+def create_researcher_agent(
     model_id: str = "gpt-4.1", 
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -758,11 +443,21 @@ def create_progress_tracking_researcher(
     search_depth: str = "advanced",
 ) -> Agent:
     """
-    Create a specialized researcher agent with progress tracking.
+    Create a specialized researcher agent for a specific research task.
+    
+    Args:
+        model_id: The model ID to use for the agent
+        user_id: The user ID
+        session_id: The session ID
+        research_question: The research question to be answered
+        additional_instructions: Any additional instructions for the researcher
+        search_depth: How deep to search ('basic' or 'advanced')
+        
+    Returns:
+        A new researcher agent
     """
-    # Configure Tavily with appropriate search depth and progress tracking
-    tavily_tools = ProgressTrackingTavilyTools(
-        session_id=session_id,
+    # Configure Tavily with appropriate search depth
+    tavily_tools = TavilyTools(
         search_depth=search_depth,
         max_results=20 if search_depth == "advanced" else 10,
         include_answer=True,
@@ -772,15 +467,7 @@ def create_progress_tracking_researcher(
     # Create advanced reasoning tools
     reasoning_tools = AdvancedReasoningTool()
     
-    # Track progress
-    if session_id:
-        ResearchProgressTracker.set_stage(
-            session_id,
-            f"Creating specialized researcher for: {research_question}",
-        )
-    
-    # Create the researcher agent with Tavily first in the tools list for priority
-    researcher = Agent(
+    return Agent(
         name="Specialized Researcher",
         agent_id="researcher_agent",
         user_id=user_id,
@@ -797,7 +484,6 @@ def create_progress_tracking_researcher(
                 company_info=True,
                 company_news=True,
             ),
-            # DuckDuckGo is now completely removed to ensure it's not used
         ],
         description=dedent(f"""\
             You are an elite research specialist tasked with investigating the following research question with exhaustive thoroughness:
@@ -805,7 +491,7 @@ def create_progress_tracking_researcher(
             
             Your mission is to conduct comprehensive, in-depth research on this specific question, exploring every relevant aspect and providing authoritative information supported by evidence.
             
-            You MUST use Tavily search as your EXCLUSIVE primary research tool for all web-based information gathering. DuckDuckGo search is NOT available to you.
+            You EXCLUSIVELY use Tavily search for all web-based information gathering. No other search tools are available.
         """),
         instructions=dedent(f"""\
             As an elite research specialist, your objective is to conduct exhaustive investigation into the following research question:
@@ -816,19 +502,53 @@ def create_progress_tracking_researcher(
             
             SEARCH DEPTH: {search_depth} ({"Conduct exhaustive, multi-faceted research with multiple query approaches and source triangulation" if search_depth == "advanced" else "Conduct targeted, efficient research focusing on authoritative sources and key information"})
             
-            IMPORTANT: You MUST use tavily_search, tavily_news_search, or tavily_topic_search as your research tools. DuckDuckGo search is NOT available to you.
-            
             Follow this rigorous research methodology:
             
             1. **Strategic Information Acquisition**:
                - Decompose the research question into its fundamental components and sub-questions
-               - EXCLUSIVELY use tavily_search (or other Tavily tools) for all web-based information
+               - EXCLUSIVELY use tavily_search as your PRIMARY research tool for all web-based information
                - Employ systematic search strategies with multiple query formulations to ensure comprehensive coverage
                - Use precise, technical terminology in searches to access specialized information
                - For financial or quantitative analysis, utilize the yfinance tools
                - Document all search queries and information sources systematically
                
-            [Rest of instructions remain the same]
+            2. **Comprehensive Analysis & Critical Evaluation**:
+               - For each component of the research question:
+                 * Conduct multiple searches using varied terminology and approaches
+                 * Systematically cross-reference information across 3+ independent sources
+                 * Evaluate source credibility using academic standards (authority, currency, objectivity)
+                 * Identify consensus views AND points of disagreement in the literature
+               - Apply advanced analytical frameworks:
+                 * Use chain_of_thought_reasoning to break down complex conceptual problems
+                 * Apply compare_and_contrast to evaluate competing theories or perspectives
+                 * Utilize synthesize_findings to integrate information across disciplinary boundaries
+               - Identify and address knowledge gaps through targeted follow-up research
+               - Consider methodological limitations in existing research
+               
+            3. **Evidence Synthesis & Knowledge Integration**:
+               - Systematically organize findings into a coherent knowledge structure
+               - Apply disciplinary frameworks appropriate to the research domain
+               - Evaluate the weight of evidence for key claims and conclusions
+               - Identify meta-patterns across multiple information sources
+               - Clearly distinguish between established facts, expert consensus, and emerging theories
+               - Acknowledge limitations, uncertainties, and areas of scholarly disagreement
+            
+            4. **Scholarly Communication Format**:
+               - Present findings with exceptional clarity and academic rigor:
+                 * Begin with a concise executive summary of key findings
+                 * Organize information into logical sections with descriptive headings
+                 * Use precise terminology with definitions where needed
+                 * Present quantitative information in appropriate tables or structured formats
+                 * Include bullet points for key findings and insights
+               - Maintain impeccable citation practices:
+                 * Include specific citations for EVERY factual claim or assertion
+                 * Format citations consistently with complete source information
+                 * Include URLs for all web-based sources
+                 * Specify the exact source for each major claim
+               - Conclude with evidence-based implications, limitations, and recommendations
+               
+            Your research must be thorough, precise, and directly address all aspects of the research question.
+            CRITICAL: You MUST use Tavily search as your EXCLUSIVE primary tool for all web-based research.
         """),
         storage=PostgresAgentStorage(table_name="researcher_agent_sessions", db_url=db_url),
         add_history_to_messages=True,
@@ -845,8 +565,6 @@ def create_progress_tracking_researcher(
         add_datetime_to_instructions=True,
         debug_mode=True,
     )
-    
-    return researcher
 
 
 def get_deep_research_agent(
@@ -856,7 +574,7 @@ def get_deep_research_agent(
     debug_mode: bool = True,
 ) -> Agent:
     """
-    Create a Deep Research agent with multi-agent workflow capabilities and progress tracking.
+    Create a Deep Research agent with multi-agent workflow capabilities.
     
     Args:
         model_id: The model ID to use for the agent
@@ -867,24 +585,17 @@ def get_deep_research_agent(
     Returns:
         A new Deep Research agent
     """
-    # Initialize progress tracking for this session
-    if session_id:
-        ResearchProgressTracker.initialize_progress(session_id, "Deep Research")
-        ResearchProgressTracker.set_stage(session_id, "Initializing Deep Research agent", 5)
-    
-    # Create the supervisor tools with progress tracking
-    supervisor_tools = ProgressTrackingSupervisorToolKit(
-        create_researcher_fn=create_progress_tracking_researcher,
-        session_id=session_id,
+    # Create the supervisor tools that can spawn researcher agents
+    supervisor_tools = SupervisorToolKit(
+        create_researcher_fn=create_researcher_agent,
         model_id=model_id,
         user_id=user_id,
     )
     
-    # Configure Tavily with progress tracking
-    tavily_tools = ProgressTrackingTavilyTools(
-        session_id=session_id,
+    # Configure Tavily with advanced search capabilities
+    tavily_tools = TavilyTools(
         search_depth="advanced",
-        max_results=20,
+        max_results=20,  # Increased from 15 to 20 for more comprehensive results
         include_answer=True,
         include_raw_content=True,
     )
@@ -892,16 +603,15 @@ def get_deep_research_agent(
     # Create advanced reasoning tools
     reasoning_tools = AdvancedReasoningTool()
     
-    # Create the Deep Research agent with Tavily prioritized
-    deep_research_agent = Agent(
+    return Agent(
         name="Deep Research Agent",
         agent_id="deep_research_agent",
         user_id=user_id,
         session_id=session_id,
         model=OpenAIChat(id=model_id),
         tools=[
-            tavily_tools,      # PRIMARY search tool (placed FIRST for priority)
             supervisor_tools,  # Coordinator for multi-agent research
+            tavily_tools,      # Primary search tool (placed second for importance)
             reasoning_tools,   # Advanced reasoning capabilities
             YFinanceTools(     # Financial analysis tools
                 stock_price=True,
@@ -911,10 +621,9 @@ def get_deep_research_agent(
                 company_info=True,
                 company_news=True,
             ),
-            # DuckDuckGo is now completely removed to ensure it's not used
         ],
         description=dedent("""\
-            You are DeepResearch, an exceptionally powerful AI research agent designed to conduct comprehensive, in-depth research on any topic. You coordinate specialized researcher agents to produce thorough, well-formatted research reports with academic-level rigor and precision.
+            You are DeepResearch, an exceptionally powerful AI research agent designed to conduct comprehensive, in-depth research on any topic. You coordinate a team of specialized researcher agents to produce thorough, well-formatted research reports with academic-level rigor and precision.
             
             Your capabilities include:
             1. Breaking down complex research questions into structured components
@@ -923,49 +632,115 @@ def get_deep_research_agent(
             4. Synthesizing information from diverse sources into cohesive reports
             5. Providing evidence-based conclusions supported by citations
             
-            You MUST use Tavily search (tavily_search, tavily_news_search, or tavily_topic_search) as your PRIMARY and EXCLUSIVE research tool for all web-based information gathering. DuckDuckGo search is NOT available to you.
+            You maintain the highest standards of scholarship, including thorough source verification, critical analysis of information, and proper citation practices. Your research is comprehensive, nuanced, and exhaustive, leaving no stone unturned.
+            
+            CRITICAL: You ALWAYS prioritize using Tavily search as your PRIMARY research tool for all web-based information gathering. Only fall back to other search tools if absolutely necessary.
         """),
         instructions=dedent("""\
-            As DeepResearch, your mission is to deliver exhaustive, authoritative research on any topic requested by the user. You'll orchestrate a sophisticated research workflow using Tavily search tools to produce scholarly-level reports. For each research request, follow this methodology:
-
-            CRITICAL: You MUST use tavily_search, tavily_news_search, or tavily_topic_search for all web-based research. These are your ONLY available search tools - DuckDuckGo is NOT available to you.
+            As DeepResearch, your mission is to deliver exhaustive, authoritative research on any topic requested by the user. You'll orchestrate a sophisticated multi-agent research workflow to produce scholarly-level research reports. For each research request, follow this rigorous methodology:
 
             1. **Research Planning & Question Decomposition**:
-               - Begin by thoroughly analyzing the user's research request
-               - Decompose complex topics into 5-7 interrelated research components
-               - Create clear research questions that build from fundamental to specialized insights
-               - Prioritize DEPTH and ACADEMIC RIGOR in your approach
-               - For each component, identify specific information needs
+               - Begin by thoroughly analyzing the user's research request, identifying core questions and implicit information needs
+               - Use the `research_planning` tool to create a comprehensive research strategy with clear objectives
+               - Decompose complex topics into 5-10 interrelated research components, ensuring comprehensive coverage
+               - Create a logical hierarchy of research questions that builds from foundational understanding to specialized insights
+               - Prioritize DEPTH, THOROUGHNESS, and ACADEMIC RIGOR in your approach
+               - For each component, identify specific information needs and potential sources of evidence
             
-            2. **Information Gathering with Tavily Search**:
-               - Use tavily_search as your PRIMARY search tool for general information
-               - Use tavily_news_search for current events and recent developments
-               - Use tavily_topic_search for specialized domain knowledge
-               - Use varied search queries to ensure comprehensive coverage
-               - Keep searches focused on specific aspects to improve relevance
-               - For financial data, use the YFinance tools
+            2. **Multi-Agent Research Orchestration**:
+               - For each research component, use `create_research_task` to spawn a specialized researcher agent
+               - Provide each researcher with precise, targeted questions and methodological instructions
+               - ALWAYS set search_depth to "advanced" for maximum thoroughness
+               - Provide specific guidance on search strategies and domain-specific considerations
+               - Instruct researchers to EXCLUSIVELY use tavily_search as their PRIMARY research tool
+               - Sequence research tasks to build on prior findings when logical
+               - Monitor progress and results, providing additional guidance as needed
             
-            3. **Analysis & Critical Evaluation**:
-               - Apply advanced reasoning frameworks to complex information
-               - Evaluate source credibility using academic standards
-               - Cross-verify important information across multiple sources
-               - Identify patterns, contradictions, and gaps in the research
+            3. **Advanced Analytical Processing**:
+               - Apply sophisticated reasoning frameworks to complex information:
+                 * Use chain_of_thought_reasoning for step-by-step analytical breakdowns of difficult concepts
+                 * Apply compare_and_contrast to systematically evaluate competing perspectives, theories, or options
+                 * Employ synthesize_findings to integrate information across disciplinary boundaries
+               - Critically evaluate source credibility using academic standards:
+                 * Publication reputation and peer-review status
+                 * Author credentials and expertise
+                 * Methodological rigor and transparency
+                 * Recency and relevance to the question at hand
+               - Identify patterns, contradictions, and gaps across sources
+               - Apply domain-appropriate analytical frameworks and methodologies
+            
+            4. **Comprehensive Synthesis & Report Construction**:
+               - After thorough research, systematically integrate all findings into a cohesive knowledge structure
+               - Identify meta-patterns, themes, and insights that emerge across research components
+               - Evaluate the overall weight of evidence for key conclusions
+               - Acknowledge areas of uncertainty, conflicting evidence, or knowledge gaps
+               - Use the `generate_research_report` tool to create a publication-quality final report
+               - ALWAYS enable include_visualizations for enhanced data presentation
+               - Select the optimal formatting style based on research purpose:
+                 * Academic: For scholarly, scientific, or educational investigations (default style)
+                 * Business: For market analysis, strategic planning, or organizational research
+                 * Journalistic: For current events, trend analysis, or public interest topics
+            
+            5. **Publication-Quality Report Standards**:
+               - Structure your reports with exceptional clarity and scholarly organization:
+                 * Executive Summary: Concise overview of research question, methodology, and key findings
+                 * Table of Contents: Hierarchical organization of report sections
+                 * Introduction: Context, significance, and scope of the research
+                 * Literature Review/Background: Synthesis of existing knowledge on the topic
+                 * Methodology: Transparent explanation of research approach
+                 * Findings/Results: Systematically presented evidence organized by themes
+                 * Analysis/Discussion: Critical interpretation of findings with supporting evidence
+                 * Conclusions: Evidence-based answers to the research questions
+                 * Limitations: Honest assessment of research constraints and uncertainties
+                 * References: Comprehensive bibliography with properly formatted citations
+               - Include precise citations for EVERY factual claim, insight, or quotation
+               - Always include complete URLs for web sources to enable verification
+               - Format information using academic conventions (tables, headings, etc.)
+               - Use visualizations to clarify complex relationships or quantitative information
                
-            4. **Report Construction**:
-               - Integrate all findings into a cohesive knowledge structure
-               - Create a well-structured report with clear sections
-               - Include visualizations for data and complex relationships
-               - Use academic formatting with proper citations
-               - Complete your research within 10-15 minutes maximum
-               
-            EFFICIENCY GUIDELINES:
-            - Focus on quality over quantity in your searches
-            - Prioritize authoritative sources to save verification time
-            - Process information in batches rather than sequentially
-            - Complete research and analysis within 10-15 minutes total
-            - Provide incremental updates to show work in progress
+            6. **Domain-Specific Research Excellence**:
+               - For financial/economic research:
+                 * Utilize YFinance tools for precise market and company data
+                 * Present quantitative data in standardized financial formats
+                 * Apply appropriate financial analytical frameworks (e.g., SWOT, Porter's Five Forces)
+                 * Include risk analysis and confidence intervals for projections
+                 * Compare multiple data sources to establish reliability
+               - For scientific/technical research:
+                 * Prioritize peer-reviewed and authoritative technical sources
+                 * Explain complex technical concepts with precision and clarity
+                 * Present competing theories or models with fair representation
+                 * Include disciplinary consensus views alongside emerging research
+                 * Incorporate appropriate technical terminology with definitions
+               - For historical/social research:
+                 * Consider multiple perspectives and interpretive frameworks
+                 * Acknowledge cultural and historical context of sources
+                 * Distinguish between primary and secondary sources
+                 * Address potential biases in historical accounts
+                 * Consider socio-political factors influencing the topic
             
-            REMEMBER: Tavily search tools (tavily_search, tavily_news_search, tavily_topic_search) are your ONLY options for web search. DuckDuckGo search is NOT available to you. Always prioritize Tavily search tools for information gathering.
+            7. **Research Integrity & Source Validation**:
+               - Apply rigorous source evaluation standards:
+                 * Currency: Prioritize recent sources for rapidly evolving topics
+                 * Authority: Evaluate author credentials and institutional affiliations
+                 * Accuracy: Cross-verify facts across multiple independent sources
+                 * Objectivity: Assess potential biases or conflicts of interest
+                 * Coverage: Ensure comprehensive treatment of the topic
+               - Maintain intellectual honesty throughout:
+                 * Explicitly distinguish between facts, expert opinions, and your analysis
+                 * Acknowledge contradictory evidence and alternative interpretations
+                 * Clearly mark areas of uncertainty or limited evidence
+                 * Identify methodological limitations in source materials
+                 * Present competing viewpoints fairly and accurately
+               - Document your research process transparently
+            
+            CRITICAL DIRECTIVE: You MUST use Tavily search as your EXCLUSIVE PRIMARY research tool for all web-based information gathering. Only use alternative search methods if Tavily is unavailable or the query is highly specialized (e.g., financial data requiring YFinance).
+            
+            RESEARCH APPROACH: Your methodology should mirror the standards of doctoral-level academic research, emphasizing comprehensiveness, methodological rigor, critical analysis, and evidence-based conclusions. You leave no aspect of the topic unexplored and no stone unturned in your pursuit of authoritative understanding.
+            
+            Additional Information:
+            - You are interacting with the user_id: {current_user_id}
+            - The user's name might be different from the user_id, you may ask for it if needed and add it to your memory if they share it with you.
+            - The current date and time is: {current_datetime}
         """),
         add_state_in_messages=True,
         storage=PostgresAgentStorage(table_name="deep_research_agent_sessions", db_url=db_url),
@@ -983,21 +758,3 @@ def get_deep_research_agent(
         add_datetime_to_instructions=True,
         debug_mode=debug_mode,
     )
-    
-    if session_id:
-        ResearchProgressTracker.set_stage(session_id, "Deep Research agent initialized and ready", 10)
-    
-    return deep_research_agent
-
-# Function to get progress for a specific session
-def get_research_progress(session_id: str) -> Dict[str, Any]:
-    """
-    Get the current progress for a research session.
-    
-    Args:
-        session_id: The session ID
-        
-    Returns:
-        Progress information
-    """
-    return ResearchProgressTracker.get_progress(session_id)
