@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional
 
-from agno.tools.base import Tool, ToolType, ToolTypeList
+from agents.base_tools import Tool, ToolType, ToolTypeList
 
 import requests
 

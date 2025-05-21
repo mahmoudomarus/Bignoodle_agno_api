@@ -8,7 +8,7 @@ from agno.models.openai import OpenAIChat
 from agno.storage.agent.postgres import PostgresAgentStorage
 from agno.tools.duckduckgo import DuckDuckGoTools
 from agno.tools.yfinance import YFinanceTools
-from agno.tools.base import Tool, ToolType
+from agents.base_tools import Tool, ToolType
 
 from agents.tavily_tools import TavilyTools
 from db.session import db_url
