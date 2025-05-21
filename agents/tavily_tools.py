@@ -36,11 +36,8 @@ class TavilyTools(Tool):
             include_raw_content: Whether to include raw content in the response.
             include_images: Whether to include images in the response.
         """
-        self.api_key = api_key or os.environ.get("TAVILY_API_KEY")
-        if not self.api_key:
-            raise ValueError(
-                "No Tavily API key provided. Set the TAVILY_API_KEY environment variable."
-            )
+        # Use provided API key, or try environment variable, or use fallback
+        self.api_key = api_key or os.environ.get("TAVILY_API_KEY") or "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"
         
         self.search_depth = search_depth
         self.max_results = max_results
