@@ -30,6 +30,7 @@ langchain==0.0.335
 langchain_community==0.0.29
 langchain_core==0.1.26
 langchain-openai==0.1.11
+langsmith==0.0.91
 lxml==5.4.0
 markdown-it-py==3.0.0
 markupsafe==3.0.2
