@@ -11,6 +11,7 @@ def setup_cors_middleware(app: FastAPI) -> None:
         allow_origins=[
             "https://bignoodle-agent-ui-1.onrender.com",
             "https://bignoodle-agent-ui.onrender.com",
+            "https://deepresearch.bignoodle.com",
             "http://localhost:3000",
             "https://app.agno.com"
         ],
