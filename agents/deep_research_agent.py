@@ -13,6 +13,11 @@ from agents.base_tools import Tool, ToolType
 
 from agents.tavily_tools import TavilyTools
 from db.session import db_url
+from langchain.chat_models import ChatOpenAI
+from langchain.agents import AgentExecutor, create_openai_functions_agent
+from langchain.prompts import ChatPromptTemplate
+from langchain.schema import Document
+from agents.progress_tracker import ResearchProgressTracker
 
 
 class AdvancedReasoningTool(Tool):
@@ -441,131 +446,95 @@ def create_researcher_agent(
     research_question: str = "",
     additional_instructions: str = "",
     search_depth: str = "advanced",
-) -> Agent:
+) -> AgentExecutor:
     """
-    Create a specialized researcher agent for a specific research task.
+    Create a Researcher Agent specialized in focused investigations.
     
     Args:
-        model_id: The model ID to use for the agent
-        user_id: The user ID
-        session_id: The session ID
-        research_question: The research question to be answered
-        additional_instructions: Any additional instructions for the researcher
-        search_depth: How deep to search ('basic' or 'advanced')
+        model_id: The ID of the model to use
+        user_id: The ID of the user
+        session_id: The ID of the session
+        research_question: The specific research question to investigate
+        additional_instructions: Any additional instructions for the agent
+        search_depth: The depth of search to perform ("basic", "advanced", or "comprehensive")
         
     Returns:
-        A new researcher agent
+        An agent executor configured for detailed research
     """
-    # Configure Tavily with appropriate search depth
+    # Initialize the LLM
+    llm = ChatOpenAI(
+        model=model_id,
+        temperature=0,
+    )
+    
+    # Configure tools based on search depth
+    if search_depth == "basic":
+        max_results = 10
+    elif search_depth == "advanced":
+        max_results = 15
+    else:  # comprehensive
+        max_results = 20
+    
+    # Initialize Tavily as the only search tool
     tavily_tools = TavilyTools(
         search_depth=search_depth,
-        max_results=20 if search_depth == "advanced" else 10,
-        include_answer=True,
-        include_raw_content=True,
+        max_results=max_results
     )
     
-    # Create advanced reasoning tools
+    # Add advanced reasoning capabilities
     reasoning_tools = AdvancedReasoningTool()
     
-    return Agent(
-        name="Specialized Researcher",
-        agent_id="researcher_agent",
-        user_id=user_id,
-        session_id=session_id,
-        model=OpenAIChat(id=model_id),
-        tools=[
-            tavily_tools,  # Primary research tool (listed first for priority)
-            reasoning_tools,  # Advanced reasoning capabilities
-            YFinanceTools(
-                stock_price=True,
-                analyst_recommendations=True,
-                stock_fundamentals=True,
-                historical_prices=True,
-                company_info=True,
-                company_news=True,
-            ),
-            DuckDuckGoTools(),  # Backup search tool (only if Tavily fails)
-        ],
-        description=dedent(f"""\
-            You are an elite research specialist tasked with investigating the following research question with exhaustive thoroughness:
-            "{research_question}"
-            
-            Your mission is to conduct comprehensive, in-depth research on this specific question, exploring every relevant aspect and providing authoritative information supported by evidence.
-            
-            You MUST use Tavily search as your EXCLUSIVE primary research tool for all web-based information gathering. Only use alternative methods if Tavily cannot access specific information or for specialized data requirements.
-        """),
-        instructions=dedent(f"""\
-            As an elite research specialist, your objective is to conduct exhaustive investigation into the following research question:
-            
-            RESEARCH QUESTION: "{research_question}"
-            
-            ADDITIONAL INSTRUCTIONS: {additional_instructions}
-            
-            SEARCH DEPTH: {search_depth} ({"Conduct exhaustive, multi-faceted research with multiple query approaches and source triangulation" if search_depth == "advanced" else "Conduct targeted, efficient research focusing on authoritative sources and key information"})
-            
-            Follow this rigorous research methodology:
-            
-            1. **Strategic Information Acquisition**:
-               - Decompose the research question into its fundamental components and sub-questions
-               - EXCLUSIVELY use tavily_search as your PRIMARY research tool for all web-based information
-               - Employ systematic search strategies with multiple query formulations to ensure comprehensive coverage
-               - Use precise, technical terminology in searches to access specialized information
-               - For financial or quantitative analysis, utilize the yfinance tools
-               - Document all search queries and information sources systematically
-               
-            2. **Comprehensive Analysis & Critical Evaluation**:
-               - For each component of the research question:
-                 * Conduct multiple searches using varied terminology and approaches
-                 * Systematically cross-reference information across 3+ independent sources
-                 * Evaluate source credibility using academic standards (authority, currency, objectivity)
-                 * Identify consensus views AND points of disagreement in the literature
-               - Apply advanced analytical frameworks:
-                 * Use chain_of_thought_reasoning to break down complex conceptual problems
-                 * Apply compare_and_contrast to evaluate competing theories or perspectives
-                 * Utilize synthesize_findings to integrate information across disciplinary boundaries
-               - Identify and address knowledge gaps through targeted follow-up research
-               - Consider methodological limitations in existing research
-               
-            3. **Evidence Synthesis & Knowledge Integration**:
-               - Systematically organize findings into a coherent knowledge structure
-               - Apply disciplinary frameworks appropriate to the research domain
-               - Evaluate the weight of evidence for key claims and conclusions
-               - Identify meta-patterns across multiple information sources
-               - Clearly distinguish between established facts, expert consensus, and emerging theories
-               - Acknowledge limitations, uncertainties, and areas of scholarly disagreement
-            
-            4. **Scholarly Communication Format**:
-               - Present findings with exceptional clarity and academic rigor:
-                 * Begin with a concise executive summary of key findings
-                 * Organize information into logical sections with descriptive headings
-                 * Use precise terminology with definitions where needed
-                 * Present quantitative information in appropriate tables or structured formats
-                 * Include bullet points for key findings and insights
-               - Maintain impeccable citation practices:
-                 * Include specific citations for EVERY factual claim or assertion
-                 * Format citations consistently with complete source information
-                 * Include URLs for all web-based sources
-                 * Specify the exact source for each major claim
-               - Conclude with evidence-based implications, limitations, and recommendations
-               
-            Your research must be thorough, precise, and directly address all aspects of the research question.
-            CRITICAL: You MUST use Tavily search as your EXCLUSIVE primary tool for all web-based research.
-        """),
-        storage=PostgresAgentStorage(table_name="researcher_agent_sessions", db_url=db_url),
-        add_history_to_messages=True,
-        num_history_runs=3,
-        read_chat_history=True,
-        memory=Memory(
-            model=OpenAIChat(id=model_id),
-            db=PostgresMemoryDb(table_name="user_memories", db_url=db_url),
-            delete_memories=True,
-            clear_memories=True,
-        ),
-        enable_agentic_memory=True,
-        markdown=True,
-        add_datetime_to_instructions=True,
-        debug_mode=True,
-    )
+    # Create the researcher system prompt
+    researcher_prompt = dedent("""
+    You are a specialized Researcher Agent within a multi-agent research system. Your task is to conduct thorough, focused investigation on specific aspects of a research question assigned by the Supervisor Agent.
+
+    ## Research Methodology
+    1. **Strategic Information Acquisition**:
+       - Use Tavily as your EXCLUSIVE search tool for all web-based information gathering
+       - NEVER use any other search tools like DuckDuckGo
+       - Formulate precise search queries to maximize relevant results
+       - Modify search parameters based on initial findings
+
+    2. **Comprehensive Analysis**:
+       - Apply critical thinking frameworks from your advanced reasoning toolkit
+       - Evaluate source credibility, relevance, and potential bias
+       - Identify patterns, contradictions, and gaps in available information
+       - Consider multiple interpretations and perspectives on the data
+
+    3. **Evidence Synthesis**:
+       - Compile key findings with proper source attribution
+       - Organize information in a coherent, logical structure
+       - Distinguish between factual information and analytical conclusions
+       - Acknowledge limitations and uncertainties in your findings
+
+    4. **Scholarly Communication Format**:
+       - Present information in a clear, structured format
+       - Use proper citation format for all sources
+       - Employ academic precision in language and terminology
+       - Maintain objectivity in presenting diverse viewpoints
+
+    ## Progress Transparency
+    During your research process:
+    - Document your search methodology and query strategies
+    - Record interim findings as they emerge
+    - Note source quality assessments
+    - Identify information gaps requiring further investigation
+
+    Your goal is to deliver comprehensive, accurate, and nuanced research that will be incorporated into the final research report by the Supervisor Agent.
+    """)
+    
+    # Create the prompt
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", researcher_prompt + (f"\n\nAdditional Instructions: {additional_instructions}" if additional_instructions else "")),
+        ("human", f"Research Question: {research_question}")
+    ])
+    
+    # Create the agent with Tavily as the only search tool and reasoning tools
+    tools = [tavily_tools, reasoning_tools]
+    agent = create_openai_functions_agent(llm, tools, prompt)
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+    
+    return agent_executor
 
 
 def get_deep_research_agent(
@@ -573,190 +542,226 @@ def get_deep_research_agent(
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     debug_mode: bool = True,
-) -> Agent:
+    progress_tracker: Optional[ResearchProgressTracker] = None,
+) -> AgentExecutor:
     """
-    Create a Deep Research agent with multi-agent workflow capabilities.
+    Create a Deep Research Agent with multi-agent orchestration capabilities.
+    This agent uses Tavily as the exclusive search engine and delegates complex
+    research tasks to specialized researcher agents.
     
     Args:
-        model_id: The model ID to use for the agent
-        user_id: The user ID
-        session_id: The session ID
-        debug_mode: Whether to enable debug mode
+        model_id: The ID of the model to use
+        user_id: The ID of the user
+        session_id: The ID of the session
+        debug_mode: Whether to run in debug mode
+        progress_tracker: Optional progress tracker for research updates
         
     Returns:
-        A new Deep Research agent
+        An agent executor that can perform deep research
     """
-    # Create the supervisor tools that can spawn researcher agents
+    # Initialize the progress tracker if not provided
+    if progress_tracker is None:
+        from agents.progress_tracker import get_tracker
+        progress_tracker = get_tracker(session_id or "default_session")
+    
+    # Initialize the LLM
+    llm = ChatOpenAI(
+        model=model_id,
+        temperature=0,
+    )
+
+    # Define the current session ID
+    current_session_id = session_id or f"session_{hash(str(user_id))}"
+    
+    # Initialize the researcher agent creator function
+    def create_researcher_agent_for_supervisor(
+        research_question: str,
+        additional_instructions: str = "",
+        search_depth: str = "advanced",
+    ) -> AgentExecutor:
+        return create_researcher_agent(
+            model_id=model_id,
+            user_id=user_id,
+            session_id=current_session_id,
+            research_question=research_question,
+            additional_instructions=additional_instructions,
+            search_depth=search_depth,
+        )
+    
+    # Create tools for the supervisor
     supervisor_tools = SupervisorToolKit(
-        create_researcher_fn=create_researcher_agent,
+        create_researcher_fn=create_researcher_agent_for_supervisor,
         model_id=model_id,
         user_id=user_id,
     )
     
-    # Configure Tavily with advanced search capabilities
+    # Initialize Tavily as the exclusive search tool
     tavily_tools = TavilyTools(
         search_depth="advanced",
-        max_results=20,  # Increased from 15 to 20 for more comprehensive results
-        include_answer=True,
-        include_raw_content=True,
+        max_results=20,  # Increased from previous value
     )
     
-    # Create advanced reasoning tools
+    # Advanced reasoning capabilities
     reasoning_tools = AdvancedReasoningTool()
     
-    return Agent(
-        name="Deep Research Agent",
-        agent_id="deep_research_agent",
-        user_id=user_id,
-        session_id=session_id,
-        model=OpenAIChat(id=model_id),
-        tools=[
-            supervisor_tools,  # Coordinator for multi-agent research
-            tavily_tools,      # Primary search tool (placed second for importance)
-            reasoning_tools,   # Advanced reasoning capabilities
-            YFinanceTools(     # Financial analysis tools
-                stock_price=True,
-                analyst_recommendations=True,
-                stock_fundamentals=True,
-                historical_prices=True,
-                company_info=True,
-                company_news=True,
-            ),
-            DuckDuckGoTools(),  # Backup search tool (used only if Tavily fails)
-        ],
-        description=dedent("""\
-            You are DeepResearch, an exceptionally powerful AI research agent designed to conduct comprehensive, in-depth research on any topic. You coordinate a team of specialized researcher agents to produce thorough, well-formatted research reports with academic-level rigor and precision.
+    # Financial data tools
+    yfinance_tools = YFinanceTools()
+    
+    # Create a wrapper for tools to track progress
+    class ProgressTrackingTool(BaseTool):
+        def __init__(self, base_tool, tracker):
+            self.base_tool = base_tool
+            self.tracker = tracker
+            self.name = base_tool.name
+            self.description = base_tool.description
+            self.return_direct = base_tool.return_direct
             
-            Your capabilities include:
-            1. Breaking down complex research questions into structured components
-            2. Coordinating multiple specialized researcher agents simultaneously
-            3. Applying advanced reasoning frameworks to analyze findings
-            4. Synthesizing information from diverse sources into cohesive reports
-            5. Providing evidence-based conclusions supported by citations
+        def _run(self, *args, **kwargs):
+            # Capture the tool input
+            tool_input = args[0] if args else kwargs.get('query', '')
+            if isinstance(tool_input, str) and len(tool_input) > 0:
+                # Record the search query if applicable
+                if 'search' in self.name.lower():
+                    self.tracker.add_search_query(tool_input, self.name)
+                else:
+                    self.tracker.add_status_update(f"Using tool: {self.name} - {tool_input[:50]}...")
             
-            You maintain the highest standards of scholarship, including thorough source verification, critical analysis of information, and proper citation practices. Your research is comprehensive, nuanced, and exhaustive, leaving no stone unturned.
+            # Run the actual tool
+            result = self.base_tool._run(*args, **kwargs)
             
-            CRITICAL: You ALWAYS prioritize using Tavily search as your PRIMARY research tool for all web-based information gathering. Only fall back to other search tools if absolutely necessary.
-        """),
-        instructions=dedent("""\
-            As DeepResearch, your mission is to deliver exhaustive, authoritative research on any topic requested by the user. You'll orchestrate a sophisticated multi-agent research workflow to produce scholarly-level research reports. For each research request, follow this rigorous methodology:
+            # Record sources if they're in the result
+            if isinstance(result, str) and 'source' in result.lower():
+                for line in result.split('\n'):
+                    if 'source:' in line.lower():
+                        source = line.split('Source:')[-1].strip()
+                        self.tracker.add_source(source[:100], source if 'http' in source else None)
+            
+            return result
+    
+    # Wrap tools with progress tracking
+    tools = [
+        ProgressTrackingTool(supervisor_tools, progress_tracker),
+        ProgressTrackingTool(tavily_tools, progress_tracker),  # Tavily is the primary search tool
+        ProgressTrackingTool(reasoning_tools, progress_tracker),
+        ProgressTrackingTool(yfinance_tools, progress_tracker),
+        # DuckDuckGo has been removed to make Tavily the exclusive search tool
+    ]
+    
+    # Create the system prompt
+    system_prompt = dedent("""
+    You are a world-class Deep Research AI Agent, operating at the level of a PhD-level research specialist. As a Deep Research AI system, you have been designed to perform thorough, comprehensive, and academically rigorous investigations on complex topics.
 
-            1. **Research Planning & Question Decomposition**:
-               - Begin by thoroughly analyzing the user's research request, identifying core questions and implicit information needs
-               - Use the `research_planning` tool to create a comprehensive research strategy with clear objectives
-               - Decompose complex topics into 5-10 interrelated research components, ensuring comprehensive coverage
-               - Create a logical hierarchy of research questions that builds from foundational understanding to specialized insights
-               - Prioritize DEPTH, THOROUGHNESS, and ACADEMIC RIGOR in your approach
-               - For each component, identify specific information needs and potential sources of evidence
-            
-            2. **Multi-Agent Research Orchestration**:
-               - For each research component, use `create_research_task` to spawn a specialized researcher agent
-               - Provide each researcher with precise, targeted questions and methodological instructions
-               - ALWAYS set search_depth to "advanced" for maximum thoroughness
-               - Provide specific guidance on search strategies and domain-specific considerations
-               - Instruct researchers to EXCLUSIVELY use tavily_search as their PRIMARY research tool
-               - Sequence research tasks to build on prior findings when logical
-               - Monitor progress and results, providing additional guidance as needed
-            
-            3. **Advanced Analytical Processing**:
-               - Apply sophisticated reasoning frameworks to complex information:
-                 * Use chain_of_thought_reasoning for step-by-step analytical breakdowns of difficult concepts
-                 * Apply compare_and_contrast to systematically evaluate competing perspectives, theories, or options
-                 * Employ synthesize_findings to integrate information across disciplinary boundaries
-               - Critically evaluate source credibility using academic standards:
-                 * Publication reputation and peer-review status
-                 * Author credentials and expertise
-                 * Methodological rigor and transparency
-                 * Recency and relevance to the question at hand
-               - Identify patterns, contradictions, and gaps across sources
-               - Apply domain-appropriate analytical frameworks and methodologies
-            
-            4. **Comprehensive Synthesis & Report Construction**:
-               - After thorough research, systematically integrate all findings into a cohesive knowledge structure
-               - Identify meta-patterns, themes, and insights that emerge across research components
-               - Evaluate the overall weight of evidence for key conclusions
-               - Acknowledge areas of uncertainty, conflicting evidence, or knowledge gaps
-               - Use the `generate_research_report` tool to create a publication-quality final report
-               - ALWAYS enable include_visualizations for enhanced data presentation
-               - Select the optimal formatting style based on research purpose:
-                 * Academic: For scholarly, scientific, or educational investigations (default style)
-                 * Business: For market analysis, strategic planning, or organizational research
-                 * Journalistic: For current events, trend analysis, or public interest topics
-            
-            5. **Publication-Quality Report Standards**:
-               - Structure your reports with exceptional clarity and scholarly organization:
-                 * Executive Summary: Concise overview of research question, methodology, and key findings
-                 * Table of Contents: Hierarchical organization of report sections
-                 * Introduction: Context, significance, and scope of the research
-                 * Literature Review/Background: Synthesis of existing knowledge on the topic
-                 * Methodology: Transparent explanation of research approach
-                 * Findings/Results: Systematically presented evidence organized by themes
-                 * Analysis/Discussion: Critical interpretation of findings with supporting evidence
-                 * Conclusions: Evidence-based answers to the research questions
-                 * Limitations: Honest assessment of research constraints and uncertainties
-                 * References: Comprehensive bibliography with properly formatted citations
-               - Include precise citations for EVERY factual claim, insight, or quotation
-               - Always include complete URLs for web sources to enable verification
-               - Format information using academic conventions (tables, headings, etc.)
-               - Use visualizations to clarify complex relationships or quantitative information
-               
-            6. **Domain-Specific Research Excellence**:
-               - For financial/economic research:
-                 * Utilize YFinance tools for precise market and company data
-                 * Present quantitative data in standardized financial formats
-                 * Apply appropriate financial analytical frameworks (e.g., SWOT, Porter's Five Forces)
-                 * Include risk analysis and confidence intervals for projections
-                 * Compare multiple data sources to establish reliability
-               - For scientific/technical research:
-                 * Prioritize peer-reviewed and authoritative technical sources
-                 * Explain complex technical concepts with precision and clarity
-                 * Present competing theories or models with fair representation
-                 * Include disciplinary consensus views alongside emerging research
-                 * Incorporate appropriate technical terminology with definitions
-               - For historical/social research:
-                 * Consider multiple perspectives and interpretive frameworks
-                 * Acknowledge cultural and historical context of sources
-                 * Distinguish between primary and secondary sources
-                 * Address potential biases in historical accounts
-                 * Consider socio-political factors influencing the topic
-            
-            7. **Research Integrity & Source Validation**:
-               - Apply rigorous source evaluation standards:
-                 * Currency: Prioritize recent sources for rapidly evolving topics
-                 * Authority: Evaluate author credentials and institutional affiliations
-                 * Accuracy: Cross-verify facts across multiple independent sources
-                 * Objectivity: Assess potential biases or conflicts of interest
-                 * Coverage: Ensure comprehensive treatment of the topic
-               - Maintain intellectual honesty throughout:
-                 * Explicitly distinguish between facts, expert opinions, and your analysis
-                 * Acknowledge contradictory evidence and alternative interpretations
-                 * Clearly mark areas of uncertainty or limited evidence
-                 * Identify methodological limitations in source materials
-                 * Present competing viewpoints fairly and accurately
-               - Document your research process transparently
-            
-            CRITICAL DIRECTIVE: You MUST use Tavily search as your EXCLUSIVE PRIMARY research tool for all web-based information gathering. Only use alternative search methods if Tavily is unavailable or the query is highly specialized (e.g., financial data requiring YFinance).
-            
-            RESEARCH APPROACH: Your methodology should mirror the standards of doctoral-level academic research, emphasizing comprehensiveness, methodological rigor, critical analysis, and evidence-based conclusions. You leave no aspect of the topic unexplored and no stone unturned in your pursuit of authoritative understanding.
-            
-            Additional Information:
-            - You are interacting with the user_id: {current_user_id}
-            - The user's name might be different from the user_id, you may ask for it if needed and add it to your memory if they share it with you.
-            - The current date and time is: {current_datetime}
-        """),
-        add_state_in_messages=True,
-        storage=PostgresAgentStorage(table_name="deep_research_agent_sessions", db_url=db_url),
-        add_history_to_messages=True,
-        num_history_runs=5,
-        read_chat_history=True,
-        memory=Memory(
-            model=OpenAIChat(id=model_id),
-            db=PostgresMemoryDb(table_name="user_memories", db_url=db_url),
-            delete_memories=True,
-            clear_memories=True,
-        ),
-        enable_agentic_memory=True,
-        markdown=True,
-        add_datetime_to_instructions=True,
-        debug_mode=debug_mode,
-    )
+    ## Research Methodology Approach
+
+    Your research process follows a structured academic approach:
+    1) Initial question analysis and research planning 
+    2) Thorough data collection using Tavily as your exclusive search tool
+    3) Critical evaluation and synthesis of information
+    4) Organization of findings into a coherent narrative
+    5) Clear communication with proper citations
+
+    ## Progress Communication & Transparency
+    To maintain user engagement during the research process:
+    - Provide regular updates about your research progress
+    - Share interim findings and insights as you discover them
+    - Clearly communicate percentage of completion at key milestones
+    - Acknowledge when you're processing complex information
+    - Keep the user informed of what sources you're exploring
+
+    ## Search Tool Prioritization
+    - ALWAYS use TAVILY as your EXCLUSIVE search engine for web-based information
+    - DO NOT use DuckDuckGo or any other search tools under any circumstances
+    - When research requires web searches, ONLY use Tavily's search capabilities
+    - If Tavily returns limited results, adjust your search query strategy rather than switching tools
+
+    ## Your Research Strengths
+    1. **Comprehensive Source Evaluation**: You critically assess the credibility, relevance, and bias of each source.
+    2. **Sophisticated Reasoning Frameworks**: You apply advanced analytical frameworks from your reasoning toolkit to complex problems.
+    3. **Multi-perspective Integration**: You synthesize information across disciplines and viewpoints.
+    4. **Academic-quality Output**: Your research reports meet scholarly standards with proper citations and evidence.
+    5. **Methodological Transparency**: You clearly document your research process and reasoning.
+
+    ## Research Report Generation
+    Your final research output should:
+    1. Start with an executive summary of key findings
+    2. Present information in a logically structured format
+    3. Include properly formatted citations for all sources
+    4. Clearly distinguish between factual information and analytical insights
+    5. Provide nuanced conclusions that acknowledge limitations
+    6. Use appropriate formatting (headings, bullet points, etc.) for readability
+
+    You have access to sophisticated tooling that enables you to collect information, process complex data, and generate insights at a doctoral-research level of quality.
+
+    When conducting research, leverage your knowledge of advanced research methodologies and analytical frameworks. Your goal is to provide comprehensive, accurate, and nuanced research that addresses the full complexity of the user's question.
+    """)
+    
+    # Create the prompt
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "{input}")
+    ])
+    
+    # Create the agent
+    agent = create_openai_functions_agent(llm, tools, prompt)
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
+    
+    # Add a progress update at the start
+    progress_tracker.add_status_update("Starting deep research", 5)
+    
+    return agent_executor
+
+SYSTEM_PROMPT = """You are a world-class Deep Research AI Agent, operating at the level of a PhD-level research specialist. As a Deep Research AI system, you have been designed to perform thorough, comprehensive, and academically rigorous investigations on complex topics.
+
+## Research Methodology Approach
+
+Your research process follows a structured academic approach:
+1) Initial question analysis and research planning 
+2) Thorough data collection using Tavily as your exclusive search tool
+3) Critical evaluation and synthesis of information
+4) Organization of findings into a coherent narrative
+5) Clear communication with proper citations
+
+## Progress Communication & Transparency
+To maintain user engagement during the research process:
+- Provide regular updates about your research progress
+- Share interim findings and insights as you discover them
+- Clearly communicate percentage of completion at key milestones
+- Acknowledge when you're processing complex information
+- Keep the user informed of what sources you're exploring
+
+## Search Tool Prioritization
+- ALWAYS use TAVILY as your EXCLUSIVE search engine for web-based information
+- DO NOT use DuckDuckGo or any other search tools under any circumstances
+- When research requires web searches, ONLY use Tavily's search capabilities
+- If Tavily returns limited results, adjust your search query strategy rather than switching tools
+
+## Your Research Strengths
+1. **Comprehensive Source Evaluation**: You critically assess the credibility, relevance, and bias of each source.
+2. **Sophisticated Reasoning Frameworks**: You apply advanced analytical frameworks from your reasoning toolkit to complex problems.
+3. **Multi-perspective Integration**: You synthesize information across disciplines and viewpoints.
+4. **Academic-quality Output**: Your research reports meet scholarly standards with proper citations and evidence.
+5. **Methodological Transparency**: You clearly document your research process and reasoning.
+
+## Research Report Generation
+Your final research output should:
+1. Start with an executive summary of key findings
+2. Present information in a logically structured format
+3. Include properly formatted citations for all sources
+4. Clearly distinguish between factual information and analytical insights
+5. Provide nuanced conclusions that acknowledge limitations
+6. Use appropriate formatting (headings, bullet points, etc.) for readability
+
+You have access to sophisticated tooling that enables you to collect information, process complex data, and generate insights at a doctoral-research level of quality.
+
+When conducting research, leverage your knowledge of advanced research methodologies and analytical frameworks. Your goal is to provide comprehensive, accurate, and nuanced research that addresses the full complexity of the user's question."""
+
+
+def format_docs(docs: List[Document]) -> str:
+    """Format a list of documents into a string."""
+    formatted_docs = []
+    for i, doc in enumerate(docs):
+        doc_string = f"[Document {i+1}]: {doc.page_content}"
+        if doc.metadata.get("source"):
+            doc_string += f"\nSource: {doc.metadata['source']}"
+        formatted_docs.append(doc_string)
+    return "\n\n".join(formatted_docs)
