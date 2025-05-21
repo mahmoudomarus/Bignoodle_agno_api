@@ -221,115 +221,6 @@ class ProgressTrackingTavilyTools(TavilyTools):
         return result
 
 
-class ProgressTrackingSupervisorToolKit(SupervisorToolKit):
-    """
-    Extended version of SupervisorToolKit that tracks research progress.
-    """
-    
-    def __init__(self, create_researcher_fn: callable, session_id: Optional[str] = None, **kwargs):
-        super().__init__(create_researcher_fn, **kwargs)
-        self.session_id = session_id
-    
-    def create_research_task(self, task_id: str, research_question: str, additional_instructions: str = "", search_depth: str = "advanced") -> Dict[str, Any]:
-        """
-        Create a research task and track it in progress.
-        """
-        result = super().create_research_task(task_id, research_question, additional_instructions, search_depth)
-        
-        if self.session_id and result.get("status") == "success":
-            ResearchProgressTracker.add_task(
-                self.session_id,
-                task_id,
-                research_question
-            )
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                f"Created research task: {research_question}",
-            )
-        
-        return result
-    
-    def execute_research_task(self, task_id: str) -> Dict[str, Any]:
-        """
-        Execute a research task and track its completion.
-        """
-        if self.session_id:
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                f"Executing research task {task_id}",
-            )
-            
-        result = super().execute_research_task(task_id)
-        
-        if self.session_id and result.get("status") == "success":
-            ResearchProgressTracker.complete_task(
-                self.session_id,
-                task_id
-            )
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                f"Completed research task {task_id}",
-            )
-        
-        return result
-    
-    def generate_research_report(self, title: str, sections: str, format_style: str = "academic", include_visualizations: bool = True) -> Dict[str, Any]:
-        """
-        Generate a research report and track its completion.
-        """
-        if self.session_id:
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                "Generating final research report",
-                90  # Report generation is near the end
-            )
-            
-        result = super().generate_research_report(title, sections, format_style, include_visualizations)
-        
-        if self.session_id and result.get("status") == "success":
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                "Finalizing research report formatting",
-                95
-            )
-            
-            # Extract section names from the JSON
-            try:
-                sections_data = json.loads(sections)
-                for section in sections_data:
-                    if "heading" in section:
-                        ResearchProgressTracker.complete_section(
-                            self.session_id,
-                            section["heading"]
-                        )
-            except (json.JSONDecodeError, KeyError):
-                pass
-        
-        return result
-    
-    def research_planning(self, topic: str, objective: str, depth: str = "comprehensive") -> Dict[str, Any]:
-        """
-        Create a research plan and track it in progress.
-        """
-        if self.session_id:
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                f"Planning research approach for: {topic}",
-                10  # Planning is early in the process
-            )
-            
-        result = super().research_planning(topic, objective, depth)
-        
-        if self.session_id:
-            ResearchProgressTracker.set_stage(
-                self.session_id,
-                "Research plan created, preparing to gather information",
-                15
-            )
-        
-        return result
-
-
 class AdvancedReasoningTool(Tool):
     """
     A tool that provides advanced reasoning capabilities for complex research scenarios.
@@ -747,6 +638,115 @@ class SupervisorToolKit(Tool):
                 ]
             }
         }
+
+
+class ProgressTrackingSupervisorToolKit(SupervisorToolKit):
+    """
+    Extended version of SupervisorToolKit that tracks research progress.
+    """
+    
+    def __init__(self, create_researcher_fn: callable, session_id: Optional[str] = None, **kwargs):
+        super().__init__(create_researcher_fn, **kwargs)
+        self.session_id = session_id
+    
+    def create_research_task(self, task_id: str, research_question: str, additional_instructions: str = "", search_depth: str = "advanced") -> Dict[str, Any]:
+        """
+        Create a research task and track it in progress.
+        """
+        result = super().create_research_task(task_id, research_question, additional_instructions, search_depth)
+        
+        if self.session_id and result.get("status") == "success":
+            ResearchProgressTracker.add_task(
+                self.session_id,
+                task_id,
+                research_question
+            )
+            ResearchProgressTracker.set_stage(
+                self.session_id,
+                f"Created research task: {research_question}",
+            )
+        
+        return result
+    
+    def execute_research_task(self, task_id: str) -> Dict[str, Any]:
+        """
+        Execute a research task and track its completion.
+        """
+        if self.session_id:
+            ResearchProgressTracker.set_stage(
+                self.session_id,
+                f"Executing research task {task_id}",
+            )
+            
+        result = super().execute_research_task(task_id)
+        
+        if self.session_id and result.get("status") == "success":
+            ResearchProgressTracker.complete_task(
+                self.session_id,
+                task_id
+            )
+            ResearchProgressTracker.set_stage(
+                self.session_id,
+                f"Completed research task {task_id}",
+            )
+        
+        return result
+    
+    def generate_research_report(self, title: str, sections: str, format_style: str = "academic", include_visualizations: bool = True) -> Dict[str, Any]:
+        """
+        Generate a research report and track its completion.
+        """
+        if self.session_id:
+            ResearchProgressTracker.set_stage(
+                self.session_id,
+                "Generating final research report",
+                90  # Report generation is near the end
+            )
+            
+        result = super().generate_research_report(title, sections, format_style, include_visualizations)
+        
+        if self.session_id and result.get("status") == "success":
+            ResearchProgressTracker.set_stage(
+                self.session_id,
+                "Finalizing research report formatting",
+                95
+            )
+            
+            # Extract section names from the JSON
+            try:
+                sections_data = json.loads(sections)
+                for section in sections_data:
+                    if "heading" in section:
+                        ResearchProgressTracker.complete_section(
+                            self.session_id,
+                            section["heading"]
+                        )
+            except (json.JSONDecodeError, KeyError):
+                pass
+        
+        return result
+    
+    def research_planning(self, topic: str, objective: str, depth: str = "comprehensive") -> Dict[str, Any]:
+        """
+        Create a research plan and track it in progress.
+        """
+        if self.session_id:
+            ResearchProgressTracker.set_stage(
+                self.session_id,
+                f"Planning research approach for: {topic}",
+                10  # Planning is early in the process
+            )
+            
+        result = super().research_planning(topic, objective, depth)
+        
+        if self.session_id:
+            ResearchProgressTracker.set_stage(
+                self.session_id,
+                "Research plan created, preparing to gather information",
+                15
+            )
+        
+        return result
 
 
 def create_progress_tracking_researcher(
