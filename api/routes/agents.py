@@ -147,24 +147,22 @@ class ResearchProgressRequest(BaseModel):
 @agents_router.get("/research/progress/{session_id}")
 async def get_research_progress(session_id: str):
     """
-    Get the progress status of a research task
+    Get the current progress of a research task
     """
     progress_data = progress_tracker.get_session_status(session_id)
     if "error" in progress_data:
         raise HTTPException(status_code=404, detail=progress_data["error"])
-    
     return progress_data
 
 @agents_router.get("/research/progress/{session_id}/details")
 async def get_detailed_research_progress(session_id: str):
     """
-    Get detailed progress information of a research task including history
+    Get detailed progress information including history
     """
-    progress_data = progress_tracker.get_full_session_details(session_id)
-    if "error" in progress_data:
-        raise HTTPException(status_code=404, detail=progress_data["error"])
-    
-    return progress_data
+    details = progress_tracker.get_full_session_details(session_id)
+    if "error" in details:
+        raise HTTPException(status_code=404, detail=details["error"])
+    return details
 
 @agents_router.post("/deep-research")
 async def execute_deep_research(request: ResearchRequest):
@@ -179,30 +177,26 @@ async def execute_deep_research(request: ResearchRequest):
         # Set timeout to 5 minutes (300 seconds) if not specified
         timeout = request.timeout_seconds or 300
         
-        # Create a background task to handle the research
-        # This prevents the request from timing out
-        background_tasks = BackgroundTasks()
-        
         # Start research right away to create session ID
         session_id = agent.session_id or progress_tracker.create_session()
         
         # Execute the research with the specified parameters
-        async def run_research():
+        # We'll run this in a separate thread to avoid blocking
+        import threading
+        
+        def run_research():
             try:
-                # Split research into chunks to avoid token limit issues
-                progress_tracker.update_stage(session_id, ResearchStage.PLANNING)
+                # Execute the research with parameters and timeout
+                results = agent.execute_research(
+                    question=request.query,
+                    timeout_seconds=timeout
+                )
                 
-                # Pass max_tokens if specified
-                max_tokens_per_call = request.max_tokens
-                
-                # Execute the research with parameters
-                results = agent.execute_research(request.query)
-                
-                # Update progress to indicate completion
-                progress_tracker.update_stage(session_id, ResearchStage.COMPLETE)
-                progress_tracker.complete_session(session_id)
+                # Research is complete at this point
+                logger.info(f"Research completed for session {session_id}")
                 
             except Exception as e:
+                # Log any errors that occur during research
                 logger.exception(f"Error in background research task: {e}")
                 progress_tracker.update_stage(session_id, ResearchStage.ERROR)
                 progress_tracker.add_task(
@@ -210,15 +204,19 @@ async def execute_deep_research(request: ResearchRequest):
                     "Error", 
                     f"Research failed: {str(e)}"
                 )
+                progress_tracker.complete_session(session_id)
         
-        # Add the research task to run in the background
-        background_tasks.add_task(run_research)
+        # Start the research in a background thread
+        research_thread = threading.Thread(target=run_research)
+        research_thread.daemon = True  # Allow the thread to be terminated when the main thread exits
+        research_thread.start()
         
         # Return the session ID immediately so client can track progress
         return {
             "session_id": session_id,
             "message": "Research started. Use the /research/progress/{session_id} endpoint to track progress."
         }
+        
     except Exception as e:
         logger.exception(f"Error executing deep research: {e}")
         raise HTTPException(

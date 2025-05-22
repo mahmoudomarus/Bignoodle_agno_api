@@ -948,7 +948,7 @@ class DeepResearchAgent:
         self.token_usage = TokenUsageTracker()
         self.session_id = None
         
-    def execute_research(self, question: str, chunk_size: int = 3000) -> Dict[str, Any]:
+    def execute_research(self, question: str, chunk_size: int = 3000, timeout_seconds: int = 300) -> Dict[str, Any]:
         """Execute deep research on a question"""
         start_time = time.time()
         
@@ -968,8 +968,17 @@ class DeepResearchAgent:
         )["task_id"]
         progress_tracker.start_task(self.session_id, planning_task_id)
         
-        # First, let the supervisor plan the research with a clear token limit
-        planning_prompt = f"""
+        try:
+            # Set up timeout monitoring
+            timeout_task_id = progress_tracker.add_task(
+                self.session_id,
+                "Timeout Monitoring",
+                f"Monitoring for timeout (max {timeout_seconds}s)"
+            )["task_id"]
+            progress_tracker.start_task(self.session_id, timeout_task_id)
+            
+            # First, let the supervisor plan the research with a clear token limit
+            planning_prompt = f"""
 You are coordinating a research task. The research question is:
 
 {question}
@@ -978,45 +987,50 @@ Please provide a detailed research plan with 3-5 subtopics to explore.
 Include specific questions to investigate for each subtopic.
 Keep your response under 1200 words.
 """
-        
-        supervisor_response = self.supervisor_agent.chat(planning_prompt)
-        
-        progress_tracker.complete_task(
-            self.session_id, 
-            planning_task_id, 
-            "Research plan created"
-        )
-        
-        # Extract the research plan
-        research_plan = supervisor_response.content
-        logging.info(f"Research plan: {research_plan}")
-        
-        # Update stage to data collection
-        progress_tracker.update_stage(self.session_id, ResearchStage.DATA_COLLECTION)
-        
-        # Parse research plan to extract subtopics (simplified approach)
-        topics = self._extract_topics_from_plan(research_plan)
-        
-        # Limit to at most 4 topics to avoid token limit issues
-        topics = topics[:min(len(topics), 4)]
-        
-        # Research each topic
-        topic_results = []
-        for i, topic in enumerate(topics):
-            # Add task for this topic
-            topic_task_id = progress_tracker.add_task(
-                self.session_id,
-                f"Researching: {topic[:50]}...",
-                f"Collecting information on subtopic {i+1}/{len(topics)}"
-            )["task_id"]
-            progress_tracker.start_task(self.session_id, topic_task_id)
             
-            # Create a fresh researcher agent for each topic
-            researcher = self.researcher_agent_factory(tools=self.tools)
+            supervisor_response = self.supervisor_agent.chat(planning_prompt)
             
-            # Execute research on this topic with clear token limit guidance
-            logging.info(f"Researching topic: {topic}")
-            researcher_prompt = f"""
+            progress_tracker.complete_task(
+                self.session_id, 
+                planning_task_id, 
+                "Research plan created"
+            )
+            
+            # Extract the research plan
+            research_plan = supervisor_response.content
+            logging.info(f"Research plan: {research_plan}")
+            
+            # Update stage to data collection
+            progress_tracker.update_stage(self.session_id, ResearchStage.DATA_COLLECTION)
+            
+            # Parse research plan to extract subtopics (simplified approach)
+            topics = self._extract_topics_from_plan(research_plan)
+            
+            # Limit to at most 3 topics to avoid token limit issues
+            topics = topics[:min(len(topics), 3)]
+            
+            # Research each topic
+            topic_results = []
+            for i, topic in enumerate(topics):
+                # Check for timeout
+                elapsed_time = time.time() - start_time
+                if elapsed_time > timeout_seconds:
+                    raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
+                
+                # Add task for this topic
+                topic_task_id = progress_tracker.add_task(
+                    self.session_id,
+                    f"Researching: {topic[:50]}...",
+                    f"Collecting information on subtopic {i+1}/{len(topics)}"
+                )["task_id"]
+                progress_tracker.start_task(self.session_id, topic_task_id)
+                
+                # Create a fresh researcher agent for each topic
+                researcher = self.researcher_agent_factory(tools=self.tools)
+                
+                # Execute research on this topic with clear token limit guidance
+                logging.info(f"Researching topic: {topic}")
+                researcher_prompt = f"""
 Please research the following topic thoroughly:
 
 {topic}
@@ -1031,39 +1045,49 @@ IMPORTANT CONSTRAINTS:
 
 Provide detailed findings with proper citations to sources.
 """
-            researcher_response = researcher.chat(researcher_prompt)
+                researcher_response = researcher.chat(researcher_prompt)
+                
+                # Store results
+                topic_results.append({
+                    "topic": topic,
+                    "findings": researcher_response.content,
+                })
+                
+                progress_tracker.complete_task(
+                    self.session_id,
+                    topic_task_id,
+                    "Research completed for subtopic"
+                )
+                
+                # Track token usage
+                if hasattr(researcher, "token_usage"):
+                    self.token_usage.add_tracker(researcher.token_usage)
             
-            # Store results
-            topic_results.append({
-                "topic": topic,
-                "findings": researcher_response.content,
-            })
+            # Check for timeout before analysis
+            elapsed_time = time.time() - start_time
+            if elapsed_time > timeout_seconds:
+                raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
+                
+            # Update stage to analysis and synthesis
+            progress_tracker.update_stage(self.session_id, ResearchStage.ANALYSIS)
             
-            progress_tracker.complete_task(
+            # Add analysis task
+            analysis_task_id = progress_tracker.add_task(
                 self.session_id,
-                topic_task_id,
-                "Research completed for subtopic"
-            )
+                "Analyzing Research Findings",
+                "Analyzing and synthesizing findings from all subtopics"
+            )["task_id"]
+            progress_tracker.start_task(self.session_id, analysis_task_id)
             
-            # Track token usage
-            if hasattr(researcher, "token_usage"):
-                self.token_usage.add_tracker(researcher.token_usage)
-        
-        # Update stage to analysis and synthesis
-        progress_tracker.update_stage(self.session_id, ResearchStage.ANALYSIS)
-        
-        # Add analysis task
-        analysis_task_id = progress_tracker.add_task(
-            self.session_id,
-            "Analyzing Research Findings",
-            "Analyzing and synthesizing findings from all subtopics"
-        )["task_id"]
-        progress_tracker.start_task(self.session_id, analysis_task_id)
-        
-        # Process topic results one by one to avoid token limits
-        total_findings = ""
-        for i, result in enumerate(topic_results):
-            synthesis_prompt = f"""
+            # Process topic results one by one to avoid token limits
+            total_findings = ""
+            for i, result in enumerate(topic_results):
+                # Check for timeout
+                elapsed_time = time.time() - start_time
+                if elapsed_time > timeout_seconds:
+                    raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
+                    
+                synthesis_prompt = f"""
 You're analyzing research on: {question}
 
 Here is research on subtopic {i+1}/{len(topic_results)}:
@@ -1075,34 +1099,39 @@ Findings:
 Please synthesize the key points from these findings in 400 words or less.
 Focus on extracting the most important insights relevant to the main question.
 """
-            synthesis_response = self.supervisor_agent.chat(synthesis_prompt)
-            total_findings += f"\n\n## {result['topic']}\n\n{synthesis_response.content}"
-        
-        progress_tracker.complete_task(
-            self.session_id,
-            analysis_task_id,
-            "Analysis completed"
-        )
-        
-        # Update stage to report generation
-        progress_tracker.update_stage(self.session_id, ResearchStage.REPORT_GENERATION)
-        
-        # Add report generation task
-        report_task_id = progress_tracker.add_task(
-            self.session_id,
-            "Generating Research Report",
-            "Creating the final comprehensive research report"
-        )["task_id"]
-        progress_tracker.start_task(self.session_id, report_task_id)
-        
-        # Generate final report with clear token limit guidance
-        final_report_prompt = f"""
+                synthesis_response = self.supervisor_agent.chat(synthesis_prompt)
+                total_findings += f"\n\n## {result['topic']}\n\n{synthesis_response.content}"
+            
+            progress_tracker.complete_task(
+                self.session_id,
+                analysis_task_id,
+                "Analysis completed"
+            )
+            
+            # Check for timeout before report generation
+            elapsed_time = time.time() - start_time
+            if elapsed_time > timeout_seconds:
+                raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
+                
+            # Update stage to report generation
+            progress_tracker.update_stage(self.session_id, ResearchStage.REPORT_GENERATION)
+            
+            # Add report generation task
+            report_task_id = progress_tracker.add_task(
+                self.session_id,
+                "Generating Research Report",
+                "Creating the final comprehensive research report"
+            )["task_id"]
+            progress_tracker.start_task(self.session_id, report_task_id)
+            
+            # Generate final report with clear token limit guidance
+            final_report_prompt = f"""
 Based on your analysis of the research findings, please create a comprehensive final report for the question:
 
 {question}
 
 IMPORTANT CONSTRAINTS:
-1. Keep your total response under 8000 tokens
+1. Keep your total response under 4000 tokens to ensure completion
 2. Focus on quality over quantity
 3. Ensure the report is well-structured and flows logically
 
@@ -1118,46 +1147,88 @@ The report should include:
 
 Ensure the report is well-structured, insightful, and properly cited.
 """
-        
-        final_report_response = self.supervisor_agent.chat(final_report_prompt)
-        
-        progress_tracker.complete_task(
-            self.session_id,
-            report_task_id,
-            "Report generation completed"
-        )
-        
-        # Update stage to complete
-        progress_tracker.update_stage(self.session_id, ResearchStage.COMPLETE)
-        
-        # Store report data for later retrieval
-        progress_tracker.store_session_data(self.session_id, {
-            "report": final_report_response.content,
-            "topics_researched": [r["topic"] for r in topic_results],
-            "token_usage": self.token_usage.get_usage(),
-            "time_taken_seconds": time.time() - start_time
-        })
-        
-        progress_tracker.complete_session(self.session_id)
-        
-        # Track token usage from supervisor
-        if hasattr(self.supervisor_agent, "token_usage"):
-            self.token_usage.add_tracker(self.supervisor_agent.token_usage)
-        
-        # Calculate total time
-        end_time = time.time()
-        time_taken = end_time - start_time
-        
-        # Return the final report and metadata
-        return {
-            "question": question,
-            "report": final_report_response.content,
-            "research_plan": research_plan,
-            "topics_researched": [r["topic"] for r in topic_results],
-            "token_usage": self.token_usage.get_usage(),
-            "time_taken_seconds": time_taken,
-            "session_id": self.session_id
-        }
+            
+            final_report_response = self.supervisor_agent.chat(final_report_prompt)
+            
+            progress_tracker.complete_task(
+                self.session_id,
+                report_task_id,
+                "Report generation completed"
+            )
+            
+            # Update timeout monitoring task
+            progress_tracker.complete_task(
+                self.session_id,
+                timeout_task_id,
+                f"Research completed successfully in {time.time() - start_time:.2f} seconds"
+            )
+            
+            # Update stage to complete
+            progress_tracker.update_stage(self.session_id, ResearchStage.COMPLETE)
+            
+            # Store report data for later retrieval
+            progress_tracker.store_session_data(self.session_id, {
+                "report": final_report_response.content,
+                "topics_researched": [r["topic"] for r in topic_results],
+                "token_usage": self.token_usage.get_usage(),
+                "time_taken_seconds": time.time() - start_time
+            })
+            
+            progress_tracker.complete_session(self.session_id)
+            
+            # Track token usage from supervisor
+            if hasattr(self.supervisor_agent, "token_usage"):
+                self.token_usage.add_tracker(self.supervisor_agent.token_usage)
+            
+            # Calculate total time
+            end_time = time.time()
+            time_taken = end_time - start_time
+            
+            # Return the final report and metadata
+            return {
+                "question": question,
+                "report": final_report_response.content,
+                "research_plan": research_plan,
+                "topics_researched": [r["topic"] for r in topic_results],
+                "token_usage": self.token_usage.get_usage(),
+                "time_taken_seconds": time_taken,
+                "session_id": self.session_id
+            }
+            
+        except TimeoutError as e:
+            # Handle timeout explicitly
+            logging.error(f"Research timed out: {str(e)}")
+            progress_tracker.update_stage(self.session_id, ResearchStage.ERROR)
+            progress_tracker.add_task(
+                self.session_id,
+                "Research Timeout",
+                f"Research exceeded maximum time limit of {timeout_seconds} seconds"
+            )
+            
+            # Return what we have so far
+            return {
+                "question": question,
+                "error": f"Research timed out after {timeout_seconds} seconds",
+                "partial_results": topic_results if 'topic_results' in locals() else [],
+                "session_id": self.session_id
+            }
+            
+        except Exception as e:
+            # Handle any other exceptions
+            logging.exception(f"Error in execute_research: {str(e)}")
+            progress_tracker.update_stage(self.session_id, ResearchStage.ERROR)
+            progress_tracker.add_task(
+                self.session_id,
+                "Research Error",
+                f"Error during research: {str(e)}"
+            )
+            
+            # Return error information
+            return {
+                "question": question,
+                "error": f"Research failed: {str(e)}",
+                "session_id": self.session_id
+            }
     
     def _extract_topics_from_plan(self, research_plan: str) -> List[str]:
         """Extract research topics from the supervisor's research plan"""
