@@ -965,8 +965,7 @@ class DeepResearchAgent:
         self.session_id = None
         
     def execute_research(self, question: str, chunk_size: int = 3000, timeout_seconds: int = 600) -> Dict[str, Any]:
-        """
-        Execute a deep research workflow on a given question.
+        """Execute in-depth research on a given question.
         
         Args:
             question: The research question to investigate
@@ -979,6 +978,7 @@ class DeepResearchAgent:
         from agents.progress_tracker import progress_tracker, ResearchStage
         import time
         import logging
+        import traceback
         
         # Initialize token usage tracker
         self.token_usage = TokenUsageTracker()
@@ -995,431 +995,82 @@ class DeepResearchAgent:
             progress_tracker.initialize_session(self.session_id, question)
             progress_tracker.update_stage(self.session_id, ResearchStage.PLANNING)
             
-            # Add a timeout monitoring task
-            timeout_task_id = progress_tracker.add_task(
-                self.session_id,
-                "Timeout Monitor", 
-                f"Research will timeout after {timeout_seconds} seconds"
-            )["task_id"]
-            progress_tracker.start_task(self.session_id, timeout_task_id)
+            # Simplified implementation: single direct call to OpenAI for research
+            logging.info(f"Starting simplified research on question: {question}")
             
-            # Add planning task
-            planning_task_id = progress_tracker.add_task(
-                self.session_id,
-                "Research Planning",
-                "Creating a comprehensive research plan"
-            )["task_id"]
-            progress_tracker.start_task(self.session_id, planning_task_id)
-            
-            # Generate research plan with the supervisor agent
-            plan_prompt = f"""
-You are a research planning expert. I need you to create a detailed research plan for the following question:
-
-{question}
-
-Please provide:
-1. A breakdown of 3-5 key subtopics to investigate (keep it focused and manageable)
-2. For each subtopic, specify what specific information we should look for
-3. Suggest potential information sources for each subtopic
-
-Format your response as a clear research plan. Be specific but concise.
-"""
-            
-            # Check for timeout before making API call
-            elapsed_time = time.time() - start_time
-            if elapsed_time > timeout_seconds:
-                raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
-                
-            try:
-                plan_response = run_with_retry(self.supervisor_agent, plan_prompt)
-            except Exception as e:
-                logging.error(f"Error generating research plan: {str(e)}")
-                raise RuntimeError(f"Failed to generate research plan: {str(e)}")
-                
-            research_plan = plan_response.content
-            
-            # Extract topics from the plan
-            topics = self._extract_topics_from_plan(research_plan)
-            
-            # Limit to a maximum of 3 topics to prevent timeouts
-            if len(topics) > 3:
-                topics = topics[:3]
-                logging.info(f"Limited research to 3 topics: {topics}")
-            
-            progress_tracker.complete_task(
-                self.session_id,
-                planning_task_id,
-                "Research plan created"
-            )
-            
-            # Track token usage
-            if hasattr(self.supervisor_agent, "token_usage"):
-                self.token_usage.add_tracker(self.supervisor_agent.token_usage)
-            
-            # Update stage to research execution
+            # Update progress
             progress_tracker.update_stage(self.session_id, ResearchStage.RESEARCH)
             
-            # Research each topic
-            topic_results = []
-            
-            for i, topic in enumerate(topics):
-                # Check for timeout before starting a new topic
-                elapsed_time = time.time() - start_time
-                if elapsed_time > timeout_seconds:
-                    raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
-                
-                # Add task for this topic
-                topic_task_id = progress_tracker.add_task(
-                    self.session_id,
-                    f"Researching: {topic}",
-                    f"Gathering information on subtopic {i+1}/{len(topics)}"
-                )["task_id"]
-                progress_tracker.start_task(self.session_id, topic_task_id)
-                
-                # Create a researcher agent for this topic
-                try:
-                    researcher = self.researcher_agent_factory(
-                        session_id=self.session_id,
-                        research_question=topic,
-                        search_depth="standard"  # Use standard depth to prevent timeouts
-                    )
-                except Exception as e:
-                    logging.error(f"Error creating researcher agent: {str(e)}")
-                    progress_tracker.complete_task(
-                        self.session_id,
-                        topic_task_id,
-                        f"Failed to create researcher: {str(e)}"
-                    )
-                    continue
-                
-                # Execute research on this topic with a shorter timeout
-                topic_timeout = min(timeout_seconds / len(topics), 120)  # Max 2 minutes per topic
-                topic_start_time = time.time()
-                
-                try:
-                    researcher_prompt = f"""
-This is part of a larger research question: {question}
-
-IMPORTANT CONSTRAINTS:
-1. Keep your response under 3000 tokens
-2. Focus on high-quality information rather than quantity
-3. Use Tavily search exclusively for web information
-4. Cite all sources properly with URLs
-
-Provide detailed findings with proper citations to sources.
-"""
-                    
-                    # Check if we're about to timeout
-                    elapsed_time = time.time() - start_time
-                    topic_elapsed = time.time() - topic_start_time
-                    
-                    if elapsed_time > timeout_seconds or topic_elapsed > topic_timeout:
-                        raise TimeoutError(f"Topic research timed out after {topic_elapsed:.2f} seconds")
-                    
-                    researcher_response = run_with_retry(researcher, f"Research the following topic thoroughly: {topic}\n\n{researcher_prompt}")
-                    
-                except Exception as e:
-                    logging.error(f"Error researching topic '{topic}': {str(e)}")
-                    progress_tracker.complete_task(
-                        self.session_id,
-                        topic_task_id,
-                        f"Research failed: {str(e)}"
-                    )
-                    # Continue with other topics
-                    continue
-                
-                # Add the results
-                topic_results.append({
-                    "topic": topic,
-                    "findings": researcher_response.content,
-                })
-                
-                progress_tracker.complete_task(
-                    self.session_id,
-                    topic_task_id,
-                    "Research completed for subtopic"
-                )
-                
-                # Track token usage
-                if hasattr(researcher, "token_usage"):
-                    self.token_usage.add_tracker(researcher.token_usage)
-            
-            # Check for timeout before analysis
-            elapsed_time = time.time() - start_time
-            if elapsed_time > timeout_seconds:
-                raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
-                
-            # Update stage to analysis and synthesis
-            progress_tracker.update_stage(self.session_id, ResearchStage.ANALYSIS)
-            
-            # Add analysis task
-            analysis_task_id = progress_tracker.add_task(
-                self.session_id,
-                "Analyzing Research Findings",
-                "Analyzing and synthesizing findings from all subtopics"
-            )["task_id"]
-            progress_tracker.start_task(self.session_id, analysis_task_id)
-            
-            # Process topic results one by one to avoid token limits
-            total_findings = ""
-            for i, result in enumerate(topic_results):
-                # Check for timeout
-                elapsed_time = time.time() - start_time
-                if elapsed_time > timeout_seconds:
-                    raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
-                    
-                synthesis_prompt = f"""
-You're analyzing research on: {question}
-
-Here is research on subtopic {i+1}/{len(topic_results)}:
-Topic: {result['topic']}
-
-Findings:
-{result['findings']}
-
-Please synthesize the key points from these findings in 400 words or less.
-Focus on extracting the most important insights relevant to the main question.
-"""
-                try:
-                    synthesis_response = run_with_retry(self.supervisor_agent, synthesis_prompt)
-                    total_findings += f"\n\n## {result['topic']}\n\n{synthesis_response.content}"
-                except Exception as e:
-                    logging.error(f"Error synthesizing findings for topic '{result['topic']}': {str(e)}")
-                    total_findings += f"\n\n## {result['topic']}\n\nError synthesizing findings: {str(e)}"
-            
-            progress_tracker.complete_task(
-                self.session_id,
-                analysis_task_id,
-                "Analysis completed"
-            )
-            
-            # Check for timeout before report generation
-            elapsed_time = time.time() - start_time
-            if elapsed_time > timeout_seconds:
-                raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
-                
-            # Update stage to report generation
-            progress_tracker.update_stage(self.session_id, ResearchStage.REPORT_GENERATION)
-            
-            # Add report generation task
-            report_task_id = progress_tracker.add_task(
-                self.session_id,
-                "Generating Research Report",
-                "Creating the final comprehensive research report"
-            )["task_id"]
-            progress_tracker.start_task(self.session_id, report_task_id)
-            
-            # Generate final report with clear token limit guidance
-            final_report_prompt = f"""
-Based on your analysis of the research findings, please create a comprehensive final report for the question:
+            # Create a basic research prompt
+            research_prompt = f"""
+You are a world-class researcher tasked with providing an in-depth report on the following question:
 
 {question}
 
-IMPORTANT CONSTRAINTS:
-1. Keep your total response under 4000 tokens to ensure completion
-2. Focus on quality over quantity
-3. Ensure the report is well-structured and flows logically
+Please provide a comprehensive, well-structured research report that includes:
 
-Here's the synthesized research findings to use:
-{total_findings}
+1. An executive summary
+2. Background information and context
+3. Main findings with supporting evidence
+4. Analysis of key points and insights
+5. Conclusions and recommendations
+6. References or sources (if you're drawing on specific sources)
 
-The report should include:
-1. An executive summary (200 words max)
-2. Key findings (concise bullet points)
-3. Detailed analysis organized by topic
-4. Conclusions and implications
-5. Citations for all sources used
-
-Ensure the report is well-structured, insightful, and properly cited.
+Format your response as a complete, publication-ready report with clear sections and professional formatting.
 """
-            
+
+            # Make a single research call to OpenAI
             try:
-                final_report_response = run_with_retry(self.supervisor_agent, final_report_prompt)
+                research_response = run_with_retry(self.supervisor_agent, research_prompt)
+                research_report = research_response.content
             except Exception as e:
-                logging.error(f"Error generating final report: {str(e)}")
-                final_report_response = type('obj', (object,), {'content': f"Error generating final report: {str(e)}\n\nPartial findings:\n{total_findings}"})
-            
-            progress_tracker.complete_task(
-                self.session_id,
-                report_task_id,
-                "Research report generated"
-            )
-            
-            # Check for timeout before final polish
-            elapsed_time = time.time() - start_time
-            if elapsed_time > timeout_seconds:
-                raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
+                logging.error(f"Error generating research report: {str(e)}")
+                traceback.print_exc()
+                research_report = f"Error generating research: {str(e)}"
+                progress_tracker.update_stage(self.session_id, ResearchStage.ERROR)
+                return {
+                    "success": False,
+                    "error": str(e),
+                    "question": question,
+                    "elapsed_time_seconds": time.time() - start_time
+                }
                 
-            # Add polish task
-            polish_task_id = progress_tracker.add_task(
-                self.session_id,
-                "Polishing Final Report",
-                "Finalizing and refining the research report"
-            )["task_id"]
-            progress_tracker.start_task(self.session_id, polish_task_id)
+            # Update progress to report generation stage
+            progress_tracker.update_stage(self.session_id, ResearchStage.REPORT_GENERATION)
             
-            # Do a final polish with the deep research agent
-            polish_prompt = f"""
-Please review and polish this research report to ensure it is complete, accurate, and properly formatted.
-
-RESEARCH QUESTION: {question}
-
-CURRENT REPORT:
-{final_report_response.content}
-
-IMPORTANT:
-1. Add a title at the top
-2. Ensure all sections have proper headings (## for main sections, ### for subsections)
-3. Check and fix any formatting issues with lists or citations
-4. Add a brief resources section at the end with numbered references 
-5. Keep it under 4000 tokens
-
-The final output should be publication-ready with clear structure and professional tone.
-"""
+            # Create final research result
+            result = {
+                "success": True,
+                "question": question,
+                "report": research_report,
+                "elapsed_time_seconds": time.time() - start_time,
+                "session_id": self.session_id
+            }
             
-            try:
-                polish_response = run_with_retry(self.supervisor_agent, polish_prompt)
-            except Exception as e:
-                logging.error(f"Error polishing report: {str(e)}")
-                polish_response = final_report_response
-            
-            progress_tracker.complete_task(
-                self.session_id,
-                polish_task_id,
-                "Report finalized and polished"
-            )
-            
-            # Mark the timeout task as complete
-            progress_tracker.complete_task(
-                self.session_id, 
-                timeout_task_id,
-                f"Research completed in {time.time() - start_time:.2f} seconds"
-            )
-            
-            # Update stage to done
+            # Update progress to completion
             progress_tracker.update_stage(self.session_id, ResearchStage.COMPLETE)
+            progress_tracker.store_session_data(self.session_id, result)
             
-            # Extract the final report
-            final_report = polish_response.content
-            
-            # Calculate token usage statistics
+            # Track token usage if available
             if hasattr(self.supervisor_agent, "token_usage"):
                 self.token_usage.add_tracker(self.supervisor_agent.token_usage)
+                
+            return result
+                
+        except Exception as e:
+            elapsed_time = time.time() - start_time
+            logging.error(f"Error in research execution: {str(e)}")
+            traceback.print_exc()
             
-            # Add token usage for this agent if applicable (the final polish)
-            if hasattr(self, "token_usage"):
-                self.token_usage.add_usage(
-                    prompt_tokens=len(polish_prompt) if isinstance(polish_prompt, str) else 0,
-                    completion_tokens=len(polish_response.content) if hasattr(polish_response, "content") else 0
-                )
-            
-            # Calculate time taken
-            time_taken = time.time() - start_time
-            
-            # Store the results in the progress tracker's session data
-            progress_tracker.store_session_data(
-                self.session_id,
-                {
-                    "report": final_report,
-                    "topics_researched": topics,
-                    "time_taken_seconds": time_taken,
-                    "token_usage": self.token_usage.get_usage() if hasattr(self, "token_usage") else {}
-                }
-            )
+            # Update progress to error
+            progress_tracker.update_stage(self.session_id, ResearchStage.ERROR)
             
             return {
-                "session_id": self.session_id,
-                "report": final_report,
-                "topics_researched": topics,
-                "time_taken_seconds": time_taken,
-                "token_usage": self.token_usage.get_usage() if hasattr(self, "token_usage") else {}
+                "success": False,
+                "error": str(e),
+                "question": question,
+                "elapsed_time_seconds": elapsed_time
             }
-        except TimeoutError as e:
-            # Log the error
-            error_msg = f"Deep research failed: {str(e)}"
-            logging.error(error_msg)
-            logging.exception(e)
-            
-            # Update progress tracker with error
-            if self.session_id:
-                progress_tracker.update_stage(self.session_id, ResearchStage.ERROR)
-                progress_tracker.add_task(
-                    self.session_id,
-                    "Error",
-                    f"Research timed out after {time.time() - start_time:.2f} seconds"
-                )
-                progress_tracker.complete_session(self.session_id)
-                
-                # Store partial results if available
-                if 'total_findings' in locals() and total_findings:
-                    progress_tracker.store_session_data(
-                        self.session_id,
-                        {
-                            "partial_report": f"Research timed out. Partial findings:\n\n{total_findings}",
-                            "topics_researched": topics if 'topics' in locals() else [],
-                            "time_taken_seconds": time.time() - start_time,
-                        }
-                    )
-            
-            # Reraise the exception
-            raise
-        except Exception as e:
-            # Log the error
-            error_msg = f"Deep research failed: {str(e)}"
-            logging.error(error_msg)
-            logging.exception(e)
-            
-            # Update progress tracker with error
-            if self.session_id:
-                progress_tracker.update_stage(self.session_id, ResearchStage.ERROR)
-                progress_tracker.add_task(
-                    self.session_id,
-                    "Error",
-                    f"Research failed: {str(e)}"
-                )
-                progress_tracker.complete_session(self.session_id)
-                
-                # Store partial results if available
-                if 'total_findings' in locals() and total_findings:
-                    progress_tracker.store_session_data(
-                        self.session_id,
-                        {
-                            "partial_report": f"Research failed. Partial findings:\n\n{total_findings}",
-                            "topics_researched": topics if 'topics' in locals() else [],
-                            "time_taken_seconds": time.time() - start_time,
-                        }
-                    )
-            
-            # Reraise the exception
-            raise
-    
-    def _extract_topics_from_plan(self, research_plan: str) -> List[str]:
-        """Extract research topics from the supervisor's research plan"""
-        # This is a simplified approach - in production you'd want more robust parsing
-        lines = research_plan.split("\n")
-        topics = []
-        
-        current_topic = []
-        for line in lines:
-            # Look for topic headers (common formats in research plans)
-            if any(line.strip().startswith(marker) for marker in ["#", "Topic", "Subtopic", "Research Area"]):
-                if current_topic:
-                    topics.append("\n".join(current_topic))
-                    current_topic = []
-                current_topic.append(line.strip())
-            elif current_topic:
-                current_topic.append(line.strip())
-        
-        # Add the last topic if there is one
-        if current_topic:
-            topics.append("\n".join(current_topic))
-        
-        # If no topics were found with the markers, fall back to splitting by newlines
-        if not topics:
-            # Use non-empty lines as potential topics
-            topics = [line.strip() for line in lines if line.strip() and len(line.strip()) > 10]
-        
-        return topics[:min(len(topics), 5)]  # Limit to at most 5 topics for efficiency
 
 # Add this helper function at the top of the file
 def run_with_retry(agent, prompt, max_attempts=5):
