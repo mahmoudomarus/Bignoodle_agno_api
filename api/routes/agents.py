@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agents.agno_assist import get_agno_assist_knowledge
-from agents.selector import AgentType, get_agent, get_available_agents, get_agent_by_id
+from agents.selector import AgentType, get_agent, get_available_agents
 from agents.deep_research_agent import (
     DeepResearchAgent, 
     create_deep_research_agent,
