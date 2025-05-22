@@ -24,7 +24,7 @@ class TavilyTools(Tool):
         exclude_domains: Optional[List[str]] = None,
         include_answer: bool = True,
         include_raw_content: bool = True,
-        name_override: str = "web_search"  # Changed from tavily_search to web_search
+        name_override: str = "tavily_search"  # Changed back to tavily_search to match prompts
     ):
         self.api_key = api_key or os.environ.get("TAVILY_API_KEY")
         self.search_depth = search_depth
