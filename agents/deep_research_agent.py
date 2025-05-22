@@ -986,7 +986,7 @@ class DeepResearchAgent:
         
     async def execute_research(self, question: str, session_id: Optional[str] = None, timeout_seconds: int = 600) -> Dict[str, Any]:
         """
-        Execute research on the given question using Tavily search to gather real information.
+        Execute research on the given question using a multi-agent workflow with comprehensive search.
         
         Args:
             question: The research question to answer
@@ -1017,121 +1017,248 @@ class DeepResearchAgent:
             tavily_tools = TavilyTools(
                 api_key=settings.tavily_api_key,
                 search_depth="advanced",
-                max_results=15,
+                max_results=20,
                 include_answer=True,
                 include_raw_content=True,
                 include_domains=None,
                 exclude_domains=None,
             )
             
-            # Step 1: Break down the research question into search queries
-            self.logger.info("Breaking down research question into search queries")
-            decomposition_prompt = f"""
-            I need to research the following question thoroughly:
+            # STEP 1: PLANNING PHASE - Break down the research question into topics
+            self.logger.info("PLANNING PHASE: Breaking down research question into topics")
+            planning_prompt = f"""
+            You are a research planning agent. Your task is to break down the following research question into 
+            specific topic areas that need investigation:
             
-            QUESTION: {question}
+            RESEARCH QUESTION: {question}
             
-            Please break this down into 3-5 specific search queries that will help gather comprehensive information.
-            For each query, explain why it's important and what aspect of the question it addresses.
-            Format your response as a JSON array of objects with 'query' and 'reason' fields.
+            Analyze this question and:
+            1. Identify 4-6 distinct topic areas that must be researched to provide a comprehensive answer
+            2. For each topic area, explain what specific information should be gathered
+            3. Provide 2-3 specific search queries that would be effective for researching each topic area
+            4. Indicate if this appears to be about cryptocurrency/blockchain, traditional finance, or another domain
+            
+            For cryptocurrency/blockchain topics, focus on technical details, recent developments, and reliable crypto-specific sources.
+            
+            Format your response as a JSON object with the following structure:
+            {{
+                "domain": "cryptocurrency", // or "traditional_finance", "technology", "general", etc.
+                "topics": [
+                    {{
+                        "name": "Topic name",
+                        "description": "What should be researched about this topic",
+                        "search_queries": ["Query 1", "Query 2", "Query 3"]
+                    }}
+                ]
+            }}
             """
             
-            decomposition_response = self.client.chat.completions.create(
+            planning_response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a research planning assistant."},
-                    {"role": "user", "content": decomposition_prompt}
+                    {"role": "system", "content": "You are a research planning assistant specializing in information architecture."},
+                    {"role": "user", "content": planning_prompt}
                 ],
                 temperature=0.2,
                 response_format={"type": "json_object"},
-                max_tokens=1000
+                max_tokens=2000
             )
             
-            # Extract and parse search queries
+            # Parse the research plan
             try:
-                search_queries = json.loads(decomposition_response.choices[0].message.content)
-                search_queries = search_queries.get("search_queries", [])
-                if not isinstance(search_queries, list):
-                    search_queries = [{"query": question, "reason": "Main research question"}]
+                research_plan = json.loads(planning_response.choices[0].message.content)
+                domain = research_plan.get("domain", "general")
+                topics = research_plan.get("topics", [])
+                
+                if not topics:
+                    topics = [{"name": "Main topic", "description": question, "search_queries": [question]}]
+                
+                self.logger.info(f"Generated research plan with {len(topics)} topics in domain: {domain}")
             except Exception as e:
-                self.logger.error(f"Error parsing search queries: {str(e)}")
-                search_queries = [{"query": question, "reason": "Main research question"}]
-            
-            self.logger.info(f"Generated {len(search_queries)} search queries")
+                self.logger.error(f"Error parsing research plan: {str(e)}")
+                topics = [{"name": "Main topic", "description": question, "search_queries": [question]}]
+                domain = "general"
             
             # Update progress to research stage
             self.progress_tracker.update_stage(session_id, ResearchStage.RESEARCH)
             
-            # Step 2: Execute searches for each query
-            all_search_results = []
+            # STEP 2: RESEARCH PHASE - Execute searches for each topic
+            self.logger.info("RESEARCH PHASE: Executing searches across all topics")
             
-            for i, query_obj in enumerate(search_queries[:5]):  # Limit to 5 queries max
-                query = query_obj.get("query", question)
-                self.logger.info(f"Executing search {i+1}/{len(search_queries)}: {query}")
+            all_topic_results = []
+            
+            for topic_idx, topic in enumerate(topics):
+                topic_name = topic.get("name", f"Topic {topic_idx+1}")
+                search_queries = topic.get("search_queries", [question])
                 
-                try:
-                    search_result = tavily_tools.search(query)
-                    if isinstance(search_result, dict) and "results" in search_result:
-                        all_search_results.append({
-                            "query": query,
-                            "results": search_result.get("results", [])
-                        })
-                    else:
-                        self.logger.warning(f"Unexpected search result format: {search_result}")
-                except Exception as e:
-                    self.logger.error(f"Search error for query '{query}': {str(e)}")
+                self.logger.info(f"Researching topic: {topic_name}")
+                topic_results = []
+                
+                # Execute multiple search queries for this topic
+                for query_idx, query in enumerate(search_queries[:3]):  # Use up to 3 queries per topic
+                    self.logger.info(f"  Query {query_idx+1}/{len(search_queries[:3])}: {query}")
                     
-                # Brief pause between searches to avoid rate limits
-                time.sleep(1)
+                    # Special handling for crypto-related queries if domain indicates crypto
+                    if domain.lower() in ["cryptocurrency", "blockchain", "crypto"]:
+                        # Add specific terms to ensure proper results for crypto topics
+                        if "tap protocol" in query.lower() and "crypto" not in query.lower() and "blockchain" not in query.lower():
+                            query = f"{query} cryptocurrency blockchain"
+                    
+                    try:
+                        # Execute search with each query
+                        search_result = tavily_tools.search(query)
+                        
+                        if isinstance(search_result, dict) and "results" in search_result:
+                            search_results = search_result.get("results", [])
+                            # Add all results to the topic results
+                            for result in search_results[:7]:  # Take up to 7 results per query
+                                topic_results.append({
+                                    "query": query,
+                                    "title": result.get("title", ""),
+                                    "url": result.get("url", ""),
+                                    "content": result.get("content", "")
+                                })
+                        else:
+                            self.logger.warning(f"Unexpected search result format for query '{query}': {search_result}")
+                    except Exception as e:
+                        self.logger.error(f"Search error for query '{query}': {str(e)}")
+                    
+                    # Brief pause between searches to avoid rate limits
+                    time.sleep(1)
+                
+                # Process and analyze the results for this topic
+                if topic_results:
+                    all_topic_results.append({
+                        "topic": topic_name,
+                        "description": topic.get("description", ""),
+                        "results": topic_results
+                    })
             
-            # Organize and format the search results
-            organized_results = ""
-            for search in all_search_results:
-                organized_results += f"\n\nSEARCH QUERY: {search['query']}\n"
-                for i, result in enumerate(search['results'][:5]):  # Limit to top 5 results per query
-                    organized_results += f"\nResult {i+1}:\n"
-                    organized_results += f"Title: {result.get('title', 'N/A')}\n"
-                    organized_results += f"URL: {result.get('url', 'N/A')}\n"
-                    organized_results += f"Content: {result.get('content', 'No content')[:500]}...\n"  # Truncate long content
+            # STEP 3: SYNTHESIS PHASE - Analyze results for each topic and create section drafts
+            self.logger.info("SYNTHESIS PHASE: Analyzing results for each topic")
             
-            # Step 3: Generate a research report based on the search results
-            self.logger.info("Generating research report from search results")
-            research_prompt = f"""
-            You are a world-class research agent. Your task is to create a comprehensive research report on the following question:
+            section_drafts = []
             
-            QUESTION: {question}
+            for topic_data in all_topic_results:
+                topic = topic_data["topic"]
+                topic_description = topic_data["description"]
+                results = topic_data["results"]
+                
+                if not results:
+                    self.logger.warning(f"No results found for topic: {topic}")
+                    continue
+                
+                # Prepare the synthesis prompt with all results for this topic
+                result_text = ""
+                urls_included = set()
+                
+                for i, result in enumerate(results):
+                    # Avoid duplicate URLs
+                    if result["url"] in urls_included:
+                        continue
+                    
+                    urls_included.add(result["url"])
+                    result_text += f"\nSource {i+1}:\n"
+                    result_text += f"Title: {result['title']}\n"
+                    result_text += f"URL: {result['url']}\n"
+                    result_text += f"Content: {result['content'][:800]}...\n"  # Limit content length
+                
+                # Create section synthesis prompt
+                synthesis_prompt = f"""
+                You are an expert researcher focusing on the topic: "{topic}"
+                
+                Research description: {topic_description}
+                
+                Below are research findings from multiple sources on this topic:
+                
+                {result_text}
+                
+                Based on these sources, write a comprehensive section for a research report that:
+                1. Synthesizes information from multiple sources
+                2. Provides in-depth analysis of the topic
+                3. Includes relevant facts, data, and expert perspectives
+                4. Cites specific sources using URLs as references
+                5. Addresses any contradictions or gaps in the information
+                
+                Format your response with proper headings, paragraphs, and citations.
+                Be objective, thorough, and academically rigorous.
+                Include direct quotes when appropriate, clearly indicating the source.
+                """
+                
+                # Generate the section draft
+                synthesis_response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": f"You are a specialized researcher focusing on {domain} topics. Write in an authoritative, well-cited academic style."},
+                        {"role": "user", "content": synthesis_prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=2500
+                )
+                
+                section_content = synthesis_response.choices[0].message.content
+                
+                section_drafts.append({
+                    "title": topic,
+                    "content": section_content,
+                    "sources": list(urls_included)
+                })
             
-            Below are search results from reputable sources that you should use to inform your report:
+            # STEP 4: FINAL REPORT GENERATION - Combine all sections into a cohesive report
+            self.logger.info("FINAL REPORT GENERATION: Creating comprehensive research report")
             
-            {organized_results}
+            # Prepare sections for the final report
+            sections_text = ""
+            all_sources = set()
             
-            Based on these search results, create a detailed, well-structured research report. Your report should:
+            for section in section_drafts:
+                sections_text += f"\n\n## {section['title']}\n\n"
+                sections_text += section['content']
+                all_sources.update(section['sources'])
             
-            1. EXECUTIVE SUMMARY: A brief overview of your findings
-            2. BACKGROUND: Relevant context and information about the topic
-            3. MAIN FINDINGS: Detailed information addressing the question
-            4. ANALYSIS: Your expert analysis of the information
-            5. CONCLUSIONS: Clear conclusions based on your research
-            6. REFERENCES: Cite the sources used (include URLs)
+            # Create final report prompt
+            report_prompt = f"""
+            You are a world-class research director. Your team has conducted extensive research on the following question:
             
-            Be thorough, accurate, and objective in your research. Provide specific details and examples where relevant.
-            Include direct quotes and citations from the sources when appropriate.
+            RESEARCH QUESTION: {question}
             
-            IMPORTANT: You must deliver your research report immediately upon completion. Do NOT include any statements about waiting 24-48 hours or suggest that the research will be delivered at a future time. The research report should be considered final and complete when delivered.
+            Your researchers have prepared section drafts based on comprehensive analysis of over {len(all_topic_results) * 7} sources. 
+            Your task is to compile these into a cohesive, authoritative research report.
+            
+            Here are the research sections:
+            
+            {sections_text}
+            
+            Create a complete research report that:
+            
+            1. Begins with an executive summary of key findings
+            2. Introduces the research question and its importance
+            3. Integrates all sections while improving flow and connections between ideas
+            4. Provides a comprehensive conclusion that answers the research question
+            5. Includes a properly formatted references section with all sources
+            
+            The report should be scholarly in tone, comprehensive in coverage, and impeccably organized.
+            Ensure all claims are supported by the research and properly cited.
+            
+            IMPORTANT: This is for domain: {domain}. {
+                "cryptocurrency" if "cryptocurrency" in domain.lower() or "blockchain" in domain.lower() or "crypto" in domain.lower() 
+                else "Make sure to maintain appropriate domain-specific terminology and concepts."
+            }
             """
             
-            research_result = self.client.chat.completions.create(
+            # Generate the final report
+            final_report_response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a helpful research assistant."},
-                    {"role": "user", "content": research_prompt}
+                    {"role": "system", "content": "You are a senior research director with expertise in creating comprehensive, well-structured research reports."},
+                    {"role": "user", "content": report_prompt}
                 ],
-                temperature=0.2,
+                temperature=0.3,
                 max_tokens=4000
             )
             
-            # Extract the research report
-            research_report = research_result.choices[0].message.content
+            # Extract the final research report
+            research_report = final_report_response.choices[0].message.content
             
             # Update progress to complete
             self.progress_tracker.update_stage(session_id, ResearchStage.COMPLETE)
@@ -1142,6 +1269,8 @@ class DeepResearchAgent:
                 "success": True,
                 "question": question,
                 "research_report": research_report,
+                "topic_count": len(topics),
+                "source_count": len(all_sources),
                 "elapsed_time": elapsed_time,
                 "session_id": session_id
             }
