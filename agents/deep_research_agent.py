@@ -988,7 +988,7 @@ Include specific questions to investigate for each subtopic.
 Keep your response under 1200 words.
 """
             
-            supervisor_response = self.supervisor_agent.chat(planning_prompt)
+            supervisor_response = self.supervisor_agent.run(planning_prompt)
             
             progress_tracker.complete_task(
                 self.session_id, 
@@ -1045,7 +1045,7 @@ IMPORTANT CONSTRAINTS:
 
 Provide detailed findings with proper citations to sources.
 """
-                researcher_response = researcher.chat(researcher_prompt)
+                researcher_response = researcher.run(researcher_prompt)
                 
                 # Store results
                 topic_results.append({
@@ -1099,7 +1099,7 @@ Findings:
 Please synthesize the key points from these findings in 400 words or less.
 Focus on extracting the most important insights relevant to the main question.
 """
-                synthesis_response = self.supervisor_agent.chat(synthesis_prompt)
+                synthesis_response = self.supervisor_agent.run(synthesis_prompt)
                 total_findings += f"\n\n## {result['topic']}\n\n{synthesis_response.content}"
             
             progress_tracker.complete_task(
@@ -1148,87 +1148,99 @@ The report should include:
 Ensure the report is well-structured, insightful, and properly cited.
 """
             
-            final_report_response = self.supervisor_agent.chat(final_report_prompt)
+            final_report_response = self.supervisor_agent.run(final_report_prompt)
             
             progress_tracker.complete_task(
                 self.session_id,
                 report_task_id,
-                "Report generation completed"
+                "Research report generated"
             )
             
-            # Update timeout monitoring task
+            # Check for timeout before final polish
+            elapsed_time = time.time() - start_time
+            if elapsed_time > timeout_seconds:
+                raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
+                
+            # Add polish task
+            polish_task_id = progress_tracker.add_task(
+                self.session_id,
+                "Polishing Final Report",
+                "Finalizing and refining the research report"
+            )["task_id"]
+            progress_tracker.start_task(self.session_id, polish_task_id)
+            
+            # Do a final polish with the deep research agent
+            polish_prompt = f"""
+Please review and polish this research report to ensure it is complete, accurate, and properly formatted.
+
+RESEARCH QUESTION: {question}
+
+CURRENT REPORT:
+{final_report_response.content}
+
+IMPORTANT:
+1. Add a title at the top
+2. Ensure all sections have proper headings (## for main sections, ### for subsections)
+3. Check and fix any formatting issues with lists or citations
+4. Add a brief resources section at the end with numbered references 
+5. Keep it under 4000 tokens
+
+The final output should be publication-ready with clear structure and professional tone.
+"""
+            
+            polish_response = self.supervisor_agent.run(polish_prompt)
+            
             progress_tracker.complete_task(
                 self.session_id,
-                timeout_task_id,
-                f"Research completed successfully in {time.time() - start_time:.2f} seconds"
+                polish_task_id,
+                "Report finalized and polished"
             )
             
-            # Update stage to complete
+            # Mark the timeout task as complete
+            progress_tracker.complete_task(
+                self.session_id, 
+                timeout_task_id,
+                f"Research completed in {time.time() - start_time:.2f} seconds"
+            )
+            
+            # Update stage to done
             progress_tracker.update_stage(self.session_id, ResearchStage.COMPLETE)
             
-            # Store report data for later retrieval
-            progress_tracker.store_session_data(self.session_id, {
-                "report": final_report_response.content,
-                "topics_researched": [r["topic"] for r in topic_results],
-                "token_usage": self.token_usage.get_usage(),
-                "time_taken_seconds": time.time() - start_time
-            })
+            # Extract the final report
+            final_report = polish_response.content
             
-            progress_tracker.complete_session(self.session_id)
-            
-            # Track token usage from supervisor
+            # Calculate token usage statistics
             if hasattr(self.supervisor_agent, "token_usage"):
                 self.token_usage.add_tracker(self.supervisor_agent.token_usage)
             
-            # Calculate total time
-            end_time = time.time()
-            time_taken = end_time - start_time
+            # Add token usage for this agent if applicable (the final polish)
+            if hasattr(self, "token_usage"):
+                self.token_usage.add_usage("deep_research_polish", 
+                                           {"prompt_tokens": len(polish_prompt), 
+                                            "completion_tokens": len(polish_response.content)})
             
-            # Return the final report and metadata
+            # Calculate time taken
+            time_taken = time.time() - start_time
+            
             return {
-                "question": question,
-                "report": final_report_response.content,
-                "research_plan": research_plan,
-                "topics_researched": [r["topic"] for r in topic_results],
-                "token_usage": self.token_usage.get_usage(),
+                "session_id": self.session_id,
+                "report": final_report,
+                "topics_researched": topics,
                 "time_taken_seconds": time_taken,
-                "session_id": self.session_id
+                "token_usage": self.token_usage.get_usage() if hasattr(self, "token_usage") else {}
             }
-            
-        except TimeoutError as e:
-            # Handle timeout explicitly
-            logging.error(f"Research timed out: {str(e)}")
-            progress_tracker.update_stage(self.session_id, ResearchStage.ERROR)
-            progress_tracker.add_task(
-                self.session_id,
-                "Research Timeout",
-                f"Research exceeded maximum time limit of {timeout_seconds} seconds"
-            )
-            
-            # Return what we have so far
-            return {
-                "question": question,
-                "error": f"Research timed out after {timeout_seconds} seconds",
-                "partial_results": topic_results if 'topic_results' in locals() else [],
-                "session_id": self.session_id
-            }
-            
         except Exception as e:
-            # Handle any other exceptions
-            logging.exception(f"Error in execute_research: {str(e)}")
-            progress_tracker.update_stage(self.session_id, ResearchStage.ERROR)
-            progress_tracker.add_task(
-                self.session_id,
-                "Research Error",
-                f"Error during research: {str(e)}"
-            )
+            # Log the error
+            error_msg = f"Deep research failed: {str(e)}"
+            logging.error(error_msg)
+            logging.exception(e)
             
-            # Return error information
-            return {
-                "question": question,
-                "error": f"Research failed: {str(e)}",
-                "session_id": self.session_id
-            }
+            # Update progress tracker with error
+            if self.session_id:
+                progress_tracker.update_stage(self.session_id, ResearchStage.ERROR)
+                
+            # Reraise the exception
+            raise
     
     def _extract_topics_from_plan(self, research_plan: str) -> List[str]:
         """Extract research topics from the supervisor's research plan"""
