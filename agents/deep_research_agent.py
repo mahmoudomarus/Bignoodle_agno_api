@@ -1369,6 +1369,7 @@ class DeepResearchAgent:
         """Execute a research task with multi-agent reasoning and search"""
         debug_mode = kwargs.get('debug_mode', False)  # Set to False for production
         delete_memories = kwargs.get('delete_memories', False)  # Changed to False to accumulate context
+        timeout_seconds = kwargs.get('timeout_seconds', 300)  # Default 5 minute timeout
         is_crypto = False
         domain = "general"
         
@@ -1388,17 +1389,26 @@ class DeepResearchAgent:
                 # Initialize the session with the question
                 progress_tracker.initialize_session(session_id, research_question)
             
+            # Store the session ID
+            self.session_id = session_id
+            
         except Exception as e:
             logging.error(f"Error initializing progress tracker: {str(e)}")
 
         # Start with a planning phase to determine domain 
-        # Fixed: Use DEFAULT_MODEL_ID instead of undefined constants
         planning_agent = CryptoAwareAgent(
             name="Research Planner",
             agent_id="research_planning_agent",
             model=OpenAIChat(id=DEFAULT_MODEL_ID),
             debug_mode=debug_mode
         )
+        
+        # Update progress tracker stage to PLANNING
+        if session_id:
+            try:
+                progress_tracker.update_stage(session_id, ResearchStage.PLANNING)
+            except Exception as e:
+                logging.error(f"Error updating progress tracker stage: {str(e)}")
         
         # Detect if this is crypto-related
         planning_prompt = f"""
@@ -1426,8 +1436,15 @@ class DeepResearchAgent:
         """
         
         try:
-            # Fixed: Use run() instead of async_run()
+            # Run the planning agent
             planning_result = planning_agent.run(planning_prompt)
+            
+            # Add planning as first task and mark complete
+            planning_task_id = progress_tracker.add_task(
+                session_id, "Research Planning", 
+                "Create structured research plan with domain identification")
+            progress_tracker.start_task(session_id, planning_task_id["task_id"])
+            progress_tracker.complete_task(session_id, planning_task_id["task_id"], planning_result)
             
             # Try to parse the domain from the result
             if "DOMAIN:" in planning_result:
@@ -1468,8 +1485,7 @@ class DeepResearchAgent:
         # Store the domain in our progress tracker
         if session_id:
             try:
-                # Fixed: Use store_session_data instead of update_meta
-                progress_tracker.store_session_data(
+                progress_tracker.update_meta(
                     session_id, 
                     {
                         "domain": domain,
@@ -1486,18 +1502,216 @@ class DeepResearchAgent:
             "session_id": session_id
         }
         
-        # Update progress tracker with planning stage completion
-        if session_id:
-            try:
-                progress_tracker.update_stage(session_id, ResearchStage.PLANNING)
-                # Fixed: update_stage takes session_id and stage, not percentage
-                # progress_tracker.update_stage(session_id, ResearchStage.RESEARCH, 0)
-            except Exception as e:
-                logging.error(f"Error updating progress tracker stages: {str(e)}")
-        
-        # Continue with existing research execution...
-        
-        # ... existing code ...
+        # ========================
+        # STRUCTURED RESEARCH IMPLEMENTATION - MULTI-AGENT WORKFLOW
+        # ========================
+        try:
+            # 1. SETUP SUPERVISOR AGENT
+            # Create a supervisor agent if not already provided
+            if not self.supervisor_agent:
+                self.supervisor_agent = create_supervisor_agent(
+                    model_id=DEFAULT_MODEL_ID,
+                    user_id=self.user_id,
+                    session_id=session_id
+                )
+                
+            # Update progress tracker with research stage
+            if session_id:
+                progress_tracker.update_stage(session_id, ResearchStage.RESEARCH)
+            
+            # 2. RESEARCH PLANNING WITH SUPERVISOR
+            planning_task_id = progress_tracker.add_task(
+                session_id, 
+                "Research Component Planning", 
+                "Break down research question into specific components"
+            )
+            progress_tracker.start_task(session_id, planning_task_id["task_id"])
+            
+            # Have the supervisor create a comprehensive research plan
+            planning_prompt = f"""
+            I need you to create a comprehensive research plan for this question:
+            
+            RESEARCH QUESTION: {research_question}
+            
+            DOMAIN: {domain}
+            SPECIAL CONSIDERATIONS: {"This is a cryptocurrency topic. Focus on blockchain technology, tokens, and crypto markets." if is_crypto else ""}
+            
+            Create a structured research plan with:
+            1. 3-5 specific research components to investigate
+            2. Specific sub-questions for each component
+            3. A logical sequence for conducting the research
+            
+            Use your research_planning tool to create a detailed research plan.
+            """
+            
+            planning_response = self.supervisor_agent.run(planning_prompt)
+            progress_tracker.complete_task(session_id, planning_task_id["task_id"], result=planning_response)
+            
+            # 3. COMPONENT RESEARCH WITH MULTIPLE RESEARCHER AGENTS
+            # Extract components from the plan (simplified approach)
+            components = []
+            if "recommended_approach" in planning_response and "suggested_structure" in planning_response:
+                # If using the research_planning tool format
+                structure = planning_response["recommended_approach"]["suggested_structure"]
+                components = [{"name": k, "description": v} for k, v in structure.items()]
+            else:
+                # Fallback to simple parsing - find research components from the text
+                import re
+                component_matches = re.findall(r'Component \d+: ([^\n]+)', planning_response)
+                if component_matches:
+                    components = [{"name": match, "description": match} for match in component_matches]
+                else:
+                    # Default components if parsing fails
+                    components = [
+                        {"name": "Background Information", "description": "Historical and contextual information"},
+                        {"name": "Current Status", "description": "Present state and recent developments"},
+                        {"name": "Analysis", "description": "Critical analysis of key aspects"},
+                        {"name": "Future Implications", "description": "Potential future developments and significance"}
+                    ]
+            
+            # Create and execute research tasks for each component
+            component_results = []
+            for i, component in enumerate(components[:5]):  # Limit to 5 components maximum
+                component_task_id = progress_tracker.add_task(
+                    session_id,
+                    f"Research: {component['name']}",
+                    component['description']
+                )
+                progress_tracker.start_task(session_id, component_task_id["task_id"])
+                
+                # Create a task ID
+                task_id = f"task-{i+1}-{component['name'].lower().replace(' ', '-')}"
+                
+                # Have the supervisor create and execute a specific research task
+                task_prompt = f"""
+                Create and execute a detailed research task for this component of our research:
+                
+                RESEARCH QUESTION: {research_question}
+                COMPONENT: {component['name']} - {component['description']}
+                DOMAIN: {domain} {"(CRYPTOCURRENCY)" if is_crypto else ""}
+                
+                Use the create_research_task tool to create a task with ID "{task_id}", then
+                use execute_research_task to get results. 
+                
+                The research should be thorough and provide detailed, well-cited information.
+                """
+                
+                # Execute the research for this component
+                component_result = self.supervisor_agent.run(task_prompt)
+                component_results.append({
+                    "component": component['name'],
+                    "result": component_result
+                })
+                
+                # Mark this component as complete
+                progress_tracker.complete_task(session_id, component_task_id["task_id"], 
+                                             result=f"Completed research on {component['name']}")
+            
+            # 4. SYNTHESIS AND REPORT GENERATION
+            if session_id:
+                progress_tracker.update_stage(session_id, ResearchStage.REPORT_GENERATION)
+            
+            synthesis_task_id = progress_tracker.add_task(
+                session_id,
+                "Final Report Generation",
+                "Synthesize all research components into a comprehensive final report"
+            )
+            progress_tracker.start_task(session_id, synthesis_task_id["task_id"])
+            
+            # Prepare data for the report
+            sections_data = []
+            for result in component_results:
+                # Extract the relevant content, handle different formats
+                content = ""
+                if isinstance(result["result"], dict) and "results" in result["result"]:
+                    content = result["result"]["results"]
+                elif isinstance(result["result"], str):
+                    content = result["result"]
+                else:
+                    content = str(result["result"])
+                
+                sections_data.append({
+                    "heading": result["component"],
+                    "content": content
+                })
+                
+            # Convert sections to JSON string for the generate_research_report tool
+            import json
+            sections_json = json.dumps(sections_data)
+            
+            # Have the supervisor generate the final report
+            report_prompt = f"""
+            Generate a comprehensive final research report on this topic:
+            
+            RESEARCH QUESTION: {research_question}
+            DOMAIN: {domain} {"(CRYPTOCURRENCY)" if is_crypto else ""}
+            
+            Use the generate_research_report tool with these parameters:
+            - title: A descriptive title for the research report
+            - sections: The JSON data containing all research sections
+            - format_style: "academic"
+            - include_visualizations: true
+            
+            Here's the sections JSON to use:
+            {sections_json}
+            
+            The report should be comprehensive, well-structured, and maintain academic rigor with proper citations.
+            """
+            
+            # Generate the final report
+            final_report = self.supervisor_agent.run(report_prompt)
+            
+            # Extract the report text from the response
+            report_text = ""
+            if isinstance(final_report, dict) and "report" in final_report:
+                report_text = final_report["report"]
+            elif isinstance(final_report, str):
+                report_text = final_report
+            else:
+                report_text = str(final_report)
+                
+            # Store the final report in the session data
+            progress_tracker.store_session_data(session_id, {
+                "final_report": report_text,
+                "components": component_results,
+                "domain": domain,
+                "is_crypto": is_crypto
+            })
+            
+            # Mark synthesis task as complete
+            progress_tracker.complete_task(session_id, synthesis_task_id["task_id"], 
+                                         result="Completed final research report")
+            
+            # Mark the overall session as complete
+            progress_tracker.update_stage(session_id, ResearchStage.COMPLETE)
+            progress_tracker.complete_session(session_id)
+            
+            return {
+                "status": "success",
+                "session_id": session_id,
+                "report": report_text,
+                "domain": domain,
+                "is_crypto": is_crypto
+            }
+            
+        except Exception as e:
+            logging.error(f"Error during research execution: {str(e)}")
+            if session_id:
+                progress_tracker.update_stage(session_id, ResearchStage.ERROR)
+                error_task_id = progress_tracker.add_task(
+                    session_id,
+                    "Research Error",
+                    f"Error during research: {str(e)}"
+                )
+                progress_tracker.start_task(session_id, error_task_id["task_id"])
+                progress_tracker.complete_task(session_id, error_task_id["task_id"], 
+                                             result=f"Research failed: {str(e)}")
+                
+            return {
+                "status": "error",
+                "error": str(e),
+                "session_id": session_id
+            }
 
 # Add this helper function at the top of the file
 def run_with_retry(agent, prompt, max_attempts=5):

@@ -12,7 +12,8 @@ from agents.selector import AgentType, get_agent, get_available_agents, get_agen
 from agents.deep_research_agent import (
     DeepResearchAgent, 
     create_supervisor_agent,
-    create_researcher_agent
+    create_researcher_agent,
+    DEFAULT_MODEL_ID
 )
 from api.models import ResearchRequest, PlaygroundStatus
 from agents.progress_tracker import progress_tracker, ResearchStage
@@ -171,25 +172,37 @@ async def execute_deep_research(request: ResearchRequest):
     Returns a detailed report on the topic with cited sources.
     """
     try:
-        # Initialize the Deep Research Agent with specified timeout
-        agent = get_deep_research_agent_instance()
+        # Initialize the Deep Research Agent with proper components
+        from agents.deep_research_agent import DeepResearchAgent, create_supervisor_agent, create_researcher_agent
+        
+        # Create a supervisor agent for coordinating research
+        supervisor_agent = create_supervisor_agent(model_id=DEFAULT_MODEL_ID)
+        
+        # Initialize the full DeepResearchAgent
+        agent = DeepResearchAgent(
+            supervisor_agent=supervisor_agent,
+            researcher_agent_factory=create_researcher_agent,
+            model=DEFAULT_MODEL_ID
+        )
         
         # Set timeout to 5 minutes (300 seconds) if not specified
         timeout = request.timeout_seconds or 300
         
-        # Start research right away to create session ID
-        session_id = agent.session_id or progress_tracker.create_session()
+        # Create a tracker session first to get a session ID
+        from agents.progress_tracker import progress_tracker, ResearchStage
+        session_id = progress_tracker.create_session()
         
-        # Execute the research with the specified parameters
-        # We'll run this in a separate thread to avoid blocking
+        # Execute the research in a background thread
         import threading
         
         def run_research():
             try:
                 # Execute the research with parameters and timeout
                 results = agent.execute_research(
-                    question=request.query,
-                    timeout_seconds=timeout
+                    research_question=request.query,
+                    timeout_seconds=timeout,
+                    session_id=session_id,
+                    debug_mode=True  # Enable debug for more logging
                 )
                 
                 # Research is complete at this point
@@ -214,7 +227,8 @@ async def execute_deep_research(request: ResearchRequest):
         # Return the session ID immediately so client can track progress
         return {
             "session_id": session_id,
-            "message": "Research started. Use the /research/progress/{session_id} endpoint to track progress."
+            "message": "Research started successfully. Track progress at /agents/research/progress/{session_id}",
+            "status": "in_progress"
         }
         
     except Exception as e:
@@ -249,33 +263,20 @@ async def get_research_report(session_id: str):
                 "progress_percentage": progress_data["progress_percentage"]
             }
     
-    # Get the session data where we stored the report
+    # Get the session data which should contain the final report
     session_data = progress_tracker.get_session_data(session_id)
-    if not session_data or "report" not in session_data:
-        # Check if this is an older session without stored report
-        from agents.selector import get_deep_research_agent_instance
-        
-        # Try to retrieve the report from agent's memory
-        try:
-            agent = get_deep_research_agent_instance()
-            if hasattr(agent, "memory") and agent.memory:
-                # Attempt to retrieve the report from memory
-                return {
-                    "status": "complete",
-                    "report": "Report could not be retrieved from memory. Please run the research again."
-                }
-        except Exception as e:
-            logger.exception(f"Error retrieving report from memory: {e}")
-            return {
-                "status": "error",
-                "message": "Could not retrieve the report. It may have exceeded token limits or timed out."
-            }
+    if not session_data or "final_report" not in session_data:
+        return {
+            "status": "incomplete",
+            "message": "Research is complete but no final report was generated. There may have been an error during report generation."
+        }
     
-    # Return the report
+    # Return the full research report with metadata
     return {
         "status": "complete",
-        "report": session_data.get("report", "Report not found"),
-        "topics_researched": session_data.get("topics_researched", []),
-        "time_taken_seconds": session_data.get("time_taken_seconds"),
-        "token_usage": session_data.get("token_usage")
+        "report": session_data["final_report"],
+        "domain": session_data.get("domain", "unknown"),
+        "is_crypto": session_data.get("is_crypto", False),
+        "components": session_data.get("components", []),
+        "session_id": session_id
     }
