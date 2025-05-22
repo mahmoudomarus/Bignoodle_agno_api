@@ -722,8 +722,52 @@ def create_supervisor_agent(
     )
 
 
+class CryptoAwareAgent(Agent):
+    """
+    Enhanced Agent that forces using Tavily search tools when crypto terms are detected in the query.
+    This prevents the use of financial/company tools for crypto topics.
+    """
+    
+    def run(self, prompt: str, **kwargs):
+        """
+        Override the run method to intercept the prompt and force using Tavily search for crypto terms.
+        """
+        # Detect if this is a crypto/blockchain related query
+        crypto_terms = [
+            "protocol", "blockchain", "bitcoin", "ethereum", "crypto", "token", "nft", 
+            "defi", "ordinal", "web3", "dao", "dapp", "smart contract", "wallet", 
+            "mining", "staking", "validator", "consensus", "mainnet", "testnet",
+            "btc", "eth", "sol", "bnb", "xrp", "ada", "avax", "tron", "tap protocol",
+            "tap", "trac", "dmt", "digital matter theory", "bitmaps", "nat token", "hiros"
+        ]
+        
+        # Check if any crypto term is in the prompt
+        is_crypto_query = False
+        detected_term = None
+        for term in crypto_terms:
+            if term.lower() in prompt.lower():
+                is_crypto_query = True
+                detected_term = term
+                break
+        
+        # Enhanced instructions for crypto queries to force using Tavily search
+        if is_crypto_query:
+            enhanced_prompt = f"""
+IMPORTANT INSTRUCTION: This query is about {detected_term}, which is a CRYPTOCURRENCY/BLOCKCHAIN topic.
+You MUST use tavily_search tool for this query and AVOID using financial tools like GET_COMPANY_INFO.
+DO NOT confuse this with any stock symbol or traditional company.
+
+{prompt}
+"""
+            # Run with the enhanced prompt
+            return super().run(enhanced_prompt, **kwargs)
+        
+        # For non-crypto queries, use the original prompt
+        return super().run(prompt, **kwargs)
+
+
 def get_deep_research_agent(
-    model_id: str = "gpt-4o",
+    model_id: str = "gpt-4o-mini",  # Changed from gpt-4o to gpt-4o-mini
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     debug_mode: bool = True,
@@ -758,9 +802,19 @@ def get_deep_research_agent(
         user_id=user_id,
     )
     
+    # Define financial tools last to give lowest priority
+    financial_tools = YFinanceTools(
+        stock_price=True,
+        analyst_recommendations=True,
+        stock_fundamentals=True,
+        historical_prices=True,
+        company_info=True,
+        company_news=True,
+    )
+    
     # IMPORTANT: Order of tools matters for the UI tool selection!
     # Place Tavily search first so it's the default selected tool for queries
-    return Agent(
+    return CryptoAwareAgent(  # Use the enhanced Agent class that's crypto-aware
         name="Deep Research Agent",
         agent_id="deep_research_agent",
         user_id=user_id,
@@ -770,15 +824,20 @@ def get_deep_research_agent(
             tavily_tools,      # PRIMARY search tool (placed FIRST for UI priority)
             reasoning_tools,   # Advanced reasoning capabilities 
             supervisor_tools,  # Coordinator for multi-agent research
-            YFinanceTools(     # Financial analysis tools (placed last)
-                stock_price=True,
-                analyst_recommendations=True,
-                stock_fundamentals=True,
-                historical_prices=True,
-                company_info=True,
-                company_news=True,
-            ),
+            financial_tools,   # Financial analysis tools (placed last and separate variable)
         ],
+        system_message=dedent("""
+        You are a deep research agent with access to multiple tools. For ALL research questions:
+        
+        1. ALWAYS use tavily_search as your primary tool for information gathering
+        2. NEVER use financial tools (GET_COMPANY_INFO, GET_ANALYST_RECOMMENDATIONS) for any topic related to:
+           - Cryptocurrencies, blockchain, protocols, tokens, NFTs, web3
+           - Specifically: TAP protocol, DMT, Bitcoin Ordinals, Sovyrn
+        3. For questions about protocols like "TAP protocol", ONLY use tavily_search and assume it's a blockchain topic
+        4. Rely on UPDATE_USER_MEMORY only for contextual information, not as your primary research tool
+        
+        If you need to research ANY topic, start with tavily_search to get accurate, current information.
+        """),
         description=dedent("""\
             You are DeepResearch, an exceptionally powerful AI research agent designed to conduct comprehensive, in-depth research on any topic. You coordinate a team of specialized researcher agents to produce thorough, well-formatted research reports with academic-level rigor and precision.
             
