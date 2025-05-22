@@ -15,6 +15,7 @@ import uuid
 class ResearchStage(Enum):
     """Enum for tracking the stage of research"""
     PLANNING = "planning"
+    RESEARCH = "research"
     DATA_COLLECTION = "data_collection"
     ANALYSIS = "analysis"
     REPORT_GENERATION = "report_generation"

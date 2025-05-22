@@ -7,6 +7,7 @@ import logging
 import random
 import tenacity
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
+import uuid
 
 from agno.agent import Agent
 from agno.memory.v2.db.postgres import PostgresMemoryDb
@@ -964,112 +965,98 @@ class DeepResearchAgent:
         self.token_usage = TokenUsageTracker()
         self.session_id = None
         
-    def execute_research(self, question: str, chunk_size: int = 3000, timeout_seconds: int = 600) -> Dict[str, Any]:
-        """Execute in-depth research on a given question.
+    async def execute_research(self, question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Execute research on the given question using a simplified approach.
         
         Args:
-            question: The research question to investigate
-            chunk_size: Maximum chunk size for processing text
-            timeout_seconds: Maximum time in seconds before timing out (default: 10 minutes)
+            question: The research question to answer
+            session_id: Optional session ID to use
             
         Returns:
-            Dict containing the research report and metadata
+            Dictionary with research results
         """
-        from agents.progress_tracker import progress_tracker, ResearchStage
-        import time
-        import logging
         import traceback
         
-        # Initialize token usage tracker
-        self.token_usage = TokenUsageTracker()
-        
-        # Start timing
+        if not session_id:
+            session_id = str(uuid.uuid4())
+            
         start_time = time.time()
         
+        # Initialize progress tracking
+        self.progress_tracker.initialize_session(session_id, question)
+        self.progress_tracker.update_stage(session_id, ResearchStage.PLANNING)
+        
         try:
-            # Create a session ID if not already set
-            if not self.session_id:
-                self.session_id = progress_tracker.create_session()
+            self.logger.info(f"Starting research for question: {question}")
             
-            # Initialize progress tracking
-            progress_tracker.initialize_session(self.session_id, question)
-            progress_tracker.update_stage(self.session_id, ResearchStage.PLANNING)
+            # Update to research stage before making the call
+            self.progress_tracker.update_stage(session_id, ResearchStage.RESEARCH)
             
-            # Simplified implementation: single direct call to OpenAI for research
-            logging.info(f"Starting simplified research on question: {question}")
-            
-            # Update progress
-            progress_tracker.update_stage(self.session_id, ResearchStage.RESEARCH)
-            
-            # Create a basic research prompt
+            # Create a comprehensive research prompt
             research_prompt = f"""
-You are a world-class researcher tasked with providing an in-depth report on the following question:
-
-{question}
-
-Please provide a comprehensive, well-structured research report that includes:
-
-1. An executive summary
-2. Background information and context
-3. Main findings with supporting evidence
-4. Analysis of key points and insights
-5. Conclusions and recommendations
-6. References or sources (if you're drawing on specific sources)
-
-Format your response as a complete, publication-ready report with clear sections and professional formatting.
-"""
-
-            # Make a single research call to OpenAI
-            try:
-                research_response = run_with_retry(self.supervisor_agent, research_prompt)
-                research_report = research_response.content
-            except Exception as e:
-                logging.error(f"Error generating research report: {str(e)}")
-                traceback.print_exc()
-                research_report = f"Error generating research: {str(e)}"
-                progress_tracker.update_stage(self.session_id, ResearchStage.ERROR)
-                return {
-                    "success": False,
-                    "error": str(e),
-                    "question": question,
-                    "elapsed_time_seconds": time.time() - start_time
-                }
-                
-            # Update progress to report generation stage
-            progress_tracker.update_stage(self.session_id, ResearchStage.REPORT_GENERATION)
+            You are a world-class research agent. Your task is to thoroughly investigate the following question:
             
-            # Create final research result
-            result = {
+            QUESTION: {question}
+            
+            Conduct comprehensive research on this topic and provide a detailed, well-structured report.
+            
+            Your report should include:
+            
+            1. EXECUTIVE SUMMARY: A brief overview of your findings
+            2. BACKGROUND: Relevant context and information about the topic
+            3. MAIN FINDINGS: Detailed information addressing the question
+            4. ANALYSIS: Your expert analysis of the information
+            5. CONCLUSIONS: Clear conclusions based on your research
+            6. REFERENCES: Sources of information (if applicable)
+            
+            Be thorough, accurate, and objective in your research. Provide specific details and examples where relevant.
+            """
+            
+            # Make a single call to OpenAI for the research
+            self.logger.info("Making research call to OpenAI")
+            research_result = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful research assistant."},
+                    {"role": "user", "content": research_prompt}
+                ],
+                temperature=0.2,
+                max_tokens=4000
+            )
+            
+            # Extract the research report
+            research_report = research_result.choices[0].message.content
+            
+            # Update progress to complete
+            self.progress_tracker.update_stage(session_id, ResearchStage.COMPLETE)
+            
+            elapsed_time = time.time() - start_time
+            
+            return {
                 "success": True,
                 "question": question,
-                "report": research_report,
-                "elapsed_time_seconds": time.time() - start_time,
-                "session_id": self.session_id
+                "research_report": research_report,
+                "elapsed_time": elapsed_time,
+                "session_id": session_id
             }
             
-            # Update progress to completion
-            progress_tracker.update_stage(self.session_id, ResearchStage.COMPLETE)
-            progress_tracker.store_session_data(self.session_id, result)
-            
-            # Track token usage if available
-            if hasattr(self.supervisor_agent, "token_usage"):
-                self.token_usage.add_tracker(self.supervisor_agent.token_usage)
-                
-            return result
-                
         except Exception as e:
-            elapsed_time = time.time() - start_time
-            logging.error(f"Error in research execution: {str(e)}")
-            traceback.print_exc()
+            error_msg = f"Error in research execution: {str(e)}"
+            self.logger.error(error_msg)
+            self.logger.error(traceback.format_exc())
             
             # Update progress to error
-            progress_tracker.update_stage(self.session_id, ResearchStage.ERROR)
+            self.progress_tracker.update_stage(session_id, ResearchStage.ERROR)
+            
+            elapsed_time = time.time() - start_time
             
             return {
                 "success": False,
-                "error": str(e),
                 "question": question,
-                "elapsed_time_seconds": elapsed_time
+                "error": error_msg,
+                "elapsed_time": elapsed_time,
+                "session_id": session_id
             }
 
 # Add this helper function at the top of the file
