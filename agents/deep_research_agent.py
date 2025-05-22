@@ -913,7 +913,8 @@ class CryptoAwareAgent(Agent):
             "mining", "staking", "validator", "consensus", "mainnet", "testnet",
             "btc", "eth", "sol", "bnb", "xrp", "ada", "avax", "tron", "tap protocol",
             "tap", "trac", "dmt", "digital matter theory", "bitmaps", "nat token", "hiros",
-            "snat", "sovyrn", "satoshi", "bitcoin ordinals", "$nat", "runes"
+            "snat", "sovyrn", "satoshi", "bitcoin ordinals", "$nat", "runes",
+            "TAP Protocol"
         ]
     
     def _is_crypto_related(self, text):
@@ -1459,7 +1460,7 @@ class DeepResearchAgent:
                     "web3", "defi", "dao", "smart contract", "mining", "wallet", 
                     "exchange", "swap", "dex", "ordinals", "coin", "btc", "eth", 
                     "sol", "solana", "trading", "yield", "memecoin", "gas", "gas fee",
-                    "tap protocol", "dmf", "nat token", "snat"
+                    "tap protocol", "dmf", "nat token", "snat", "tap", "TAP", "TAP Protocol"
                 ]
                 
                 if any(term in domain or term in research_question.lower() for term in crypto_terms):
@@ -1473,6 +1474,12 @@ class DeepResearchAgent:
                         is_crypto = True
                         domain = "cryptocurrency"
                         break
+                
+                # Force TAP Protocol to be crypto-related since it's a known crypto project
+                if "tap protocol" in research_question.lower() or "TAP Protocol" in research_question:
+                    is_crypto = True
+                    domain = "cryptocurrency"
+                    logging.info("Forced TAP Protocol to be classified as cryptocurrency")
             
             # Log the generated plan
             logging.info(f"Research plan generated. Domain: {domain}, Is crypto: {is_crypto}")
