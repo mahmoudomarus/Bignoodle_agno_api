@@ -4,6 +4,9 @@ import json
 import os
 import time
 import logging
+import random
+import tenacity
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
 
 from agno.agent import Agent
 from agno.memory.v2.db.postgres import PostgresMemoryDb
@@ -1028,7 +1031,7 @@ Format your response as a clear research plan. Be specific but concise.
                 raise TimeoutError(f"Research timed out after {elapsed_time:.2f} seconds")
                 
             try:
-                plan_response = self.supervisor_agent.run(plan_prompt)
+                plan_response = run_with_retry(self.supervisor_agent, plan_prompt)
             except Exception as e:
                 logging.error(f"Error generating research plan: {str(e)}")
                 raise RuntimeError(f"Failed to generate research plan: {str(e)}")
@@ -1113,7 +1116,7 @@ Provide detailed findings with proper citations to sources.
                     if elapsed_time > timeout_seconds or topic_elapsed > topic_timeout:
                         raise TimeoutError(f"Topic research timed out after {topic_elapsed:.2f} seconds")
                     
-                    researcher_response = researcher.run(f"Research the following topic thoroughly: {topic}\n\n{researcher_prompt}")
+                    researcher_response = run_with_retry(researcher, f"Research the following topic thoroughly: {topic}\n\n{researcher_prompt}")
                     
                 except Exception as e:
                     logging.error(f"Error researching topic '{topic}': {str(e)}")
@@ -1178,7 +1181,7 @@ Please synthesize the key points from these findings in 400 words or less.
 Focus on extracting the most important insights relevant to the main question.
 """
                 try:
-                    synthesis_response = self.supervisor_agent.run(synthesis_prompt)
+                    synthesis_response = run_with_retry(self.supervisor_agent, synthesis_prompt)
                     total_findings += f"\n\n## {result['topic']}\n\n{synthesis_response.content}"
                 except Exception as e:
                     logging.error(f"Error synthesizing findings for topic '{result['topic']}': {str(e)}")
@@ -1231,7 +1234,7 @@ Ensure the report is well-structured, insightful, and properly cited.
 """
             
             try:
-                final_report_response = self.supervisor_agent.run(final_report_prompt)
+                final_report_response = run_with_retry(self.supervisor_agent, final_report_prompt)
             except Exception as e:
                 logging.error(f"Error generating final report: {str(e)}")
                 final_report_response = type('obj', (object,), {'content': f"Error generating final report: {str(e)}\n\nPartial findings:\n{total_findings}"})
@@ -1275,7 +1278,7 @@ The final output should be publication-ready with clear structure and profession
 """
             
             try:
-                polish_response = self.supervisor_agent.run(polish_prompt)
+                polish_response = run_with_retry(self.supervisor_agent, polish_prompt)
             except Exception as e:
                 logging.error(f"Error polishing report: {str(e)}")
                 polish_response = final_report_response
@@ -1417,3 +1420,45 @@ The final output should be publication-ready with clear structure and profession
             topics = [line.strip() for line in lines if line.strip() and len(line.strip()) > 10]
         
         return topics[:min(len(topics), 5)]  # Limit to at most 5 topics for efficiency
+
+# Add this helper function at the top of the file
+def run_with_retry(agent, prompt, max_attempts=5):
+    """Run an agent with retry logic for rate limit errors"""
+    @retry(
+        stop=stop_after_attempt(max_attempts),
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        retry=retry_if_exception_type((RateLimitError, APIError, APIConnectionError)),
+        before_sleep=before_sleep_log(logging.getLogger(), logging.WARNING)
+    )
+    def _run_with_retry():
+        try:
+            return agent.run(prompt)
+        except Exception as e:
+            if "rate limit" in str(e).lower():
+                logging.warning(f"Rate limit hit, retrying: {str(e)}")
+                raise RateLimitError(f"OpenAI rate limit: {str(e)}")
+            elif "api" in str(e).lower() and ("error" in str(e).lower() or "connection" in str(e).lower()):
+                logging.warning(f"API error, retrying: {str(e)}")
+                raise APIError(f"OpenAI API error: {str(e)}")
+            else:
+                raise e
+    
+    try:
+        return _run_with_retry()
+    except tenacity.RetryError as e:
+        # If all retries failed, return a simple object with content attribute
+        logging.error(f"All retries failed: {str(e)}")
+        return type('obj', (object,), {'content': f"Error after {max_attempts} retries: {str(e.last_attempt.exception())}"})
+
+# Define custom exceptions for retry logic
+class RateLimitError(Exception):
+    """Rate limit error from OpenAI"""
+    pass
+
+class APIError(Exception):
+    """Generic API error from OpenAI"""
+    pass
+
+class APIConnectionError(Exception):
+    """API connection error from OpenAI"""
+    pass
