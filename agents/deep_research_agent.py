@@ -1,18 +1,21 @@
 from textwrap import dedent
 from typing import Dict, List, Optional, Any
 import json
+import os
+import time
+import logging
 
 from agno.agent import Agent
 from agno.memory.v2.db.postgres import PostgresMemoryDb
 from agno.memory.v2.memory import Memory
 from agno.models.openai import OpenAIChat
 from agno.storage.agent.postgres import PostgresAgentStorage
-from agno.tools.duckduckgo import DuckDuckGoTools
 from agno.tools.yfinance import YFinanceTools
 from agents.base_tools import Tool, ToolType
 
 from agents.tavily_tools import TavilyTools
 from db.session import db_url
+from agents.progress_tracker import progress_tracker, ResearchStage
 
 
 class AdvancedReasoningTool(Tool):
@@ -634,7 +637,7 @@ def get_deep_research_agent(
             
             You maintain the highest standards of scholarship, including thorough source verification, critical analysis of information, and proper citation practices. Your research is comprehensive, nuanced, and exhaustive, leaving no stone unturned.
             
-            CRITICAL: You ALWAYS prioritize using Tavily search as your PRIMARY research tool for all web-based information gathering. Only fall back to other search tools if absolutely necessary.
+            CRITICAL: You MUST use Tavily search as your EXCLUSIVE research tool for all web-based information gathering. No other web search tools are available. Only use YFinance for specialized financial data queries.
         """),
         instructions=dedent("""\
             As DeepResearch, your mission is to deliver exhaustive, authoritative research on any topic requested by the user. You'll orchestrate a sophisticated multi-agent research workflow to produce scholarly-level research reports. For each research request, follow this rigorous methodology:
@@ -733,8 +736,6 @@ def get_deep_research_agent(
                  * Present competing viewpoints fairly and accurately
                - Document your research process transparently
             
-            CRITICAL DIRECTIVE: You MUST use Tavily search as your EXCLUSIVE PRIMARY research tool for all web-based information gathering. Only use alternative search methods if Tavily is unavailable or the query is highly specialized (e.g., financial data requiring YFinance).
-            
             RESEARCH APPROACH: Your methodology should mirror the standards of doctoral-level academic research, emphasizing comprehensiveness, methodological rigor, critical analysis, and evidence-based conclusions. You leave no aspect of the topic unexplored and no stone unturned in your pursuit of authoritative understanding.
             
             Additional Information:
@@ -758,3 +759,236 @@ def get_deep_research_agent(
         add_datetime_to_instructions=True,
         debug_mode=debug_mode,
     )
+
+
+class DeepResearchAgent:
+    """
+    Deep Research Agent that coordinates a supervisor and multiple researcher agents
+    to conduct in-depth research on a topic with well-cited, rigorous methodology.
+    """
+
+    def __init__(
+        self,
+        supervisor_agent: Agent,
+        tools: List[Tool] = None,
+        researcher_agent_factory=None,
+        max_iterations: int = 5,
+    ):
+        self.supervisor_agent = supervisor_agent
+        self.tools = tools or []
+        self.researcher_agent_factory = researcher_agent_factory or create_researcher_agent
+        self.max_iterations = max_iterations
+        self.token_usage = TokenUsageTracker()
+        self.session_id = None
+        
+    def execute_research(self, question: str) -> Dict[str, Any]:
+        """Execute deep research on a question"""
+        start_time = time.time()
+        
+        # Create a new progress tracking session
+        self.session_id = progress_tracker.create_session()
+        progress_tracker.update_stage(self.session_id, ResearchStage.PLANNING)
+        
+        # Log the research question
+        logging.info(f"Executing deep research for: {question}")
+        
+        # Add planning task
+        planning_task_id = progress_tracker.add_task(
+            self.session_id, 
+            "Research Planning", 
+            "Planning the research approach for the question"
+        )["task_id"]
+        progress_tracker.start_task(self.session_id, planning_task_id)
+        
+        # First, let the supervisor plan the research
+        supervisor_response = self.supervisor_agent.chat(f"""
+You are coordinating a research task. The research question is:
+
+{question}
+
+Please provide a detailed research plan with subtopics to explore.
+Include specific questions to investigate for each subtopic.
+""")
+        
+        progress_tracker.complete_task(
+            self.session_id, 
+            planning_task_id, 
+            "Research plan created"
+        )
+        
+        # Extract the research plan
+        research_plan = supervisor_response.content
+        logging.info(f"Research plan: {research_plan}")
+        
+        # Update stage to data collection
+        progress_tracker.update_stage(self.session_id, ResearchStage.DATA_COLLECTION)
+        
+        # Parse research plan to extract subtopics (simplified approach)
+        topics = self._extract_topics_from_plan(research_plan)
+        
+        # Research each topic
+        topic_results = []
+        for i, topic in enumerate(topics):
+            # Add task for this topic
+            topic_task_id = progress_tracker.add_task(
+                self.session_id,
+                f"Researching: {topic[:50]}...",
+                f"Collecting information on subtopic {i+1}/{len(topics)}"
+            )["task_id"]
+            progress_tracker.start_task(self.session_id, topic_task_id)
+            
+            # Create a fresh researcher agent for each topic
+            researcher = self.researcher_agent_factory(tools=self.tools)
+            
+            # Execute research on this topic
+            logging.info(f"Researching topic: {topic}")
+            researcher_response = researcher.chat(f"""
+Please research the following topic thoroughly:
+
+{topic}
+
+This is part of a larger research question: {question}
+
+Provide detailed findings with proper citations to sources.
+""")
+            
+            # Store results
+            topic_results.append({
+                "topic": topic,
+                "findings": researcher_response.content,
+            })
+            
+            progress_tracker.complete_task(
+                self.session_id,
+                topic_task_id,
+                "Research completed for subtopic"
+            )
+            
+            # Track token usage
+            if hasattr(researcher, "token_usage"):
+                self.token_usage.add_tracker(researcher.token_usage)
+        
+        # Update stage to analysis and synthesis
+        progress_tracker.update_stage(self.session_id, ResearchStage.ANALYSIS)
+        
+        # Add analysis task
+        analysis_task_id = progress_tracker.add_task(
+            self.session_id,
+            "Analyzing Research Findings",
+            "Analyzing and synthesizing findings from all subtopics"
+        )["task_id"]
+        progress_tracker.start_task(self.session_id, analysis_task_id)
+        
+        # Combine all research findings
+        combined_findings = "\n\n".join([
+            f"## {result['topic']}\n\n{result['findings']}"
+            for result in topic_results
+        ])
+        
+        # Ask supervisor to analyze and synthesize findings
+        supervisor_prompt = f"""
+You now have the research findings on all subtopics related to the main question:
+
+{question}
+
+Here are the detailed findings:
+
+{combined_findings}
+
+Please analyze these findings and create a comprehensive synthesis.
+Identify key insights, patterns, and gaps in the research.
+"""
+        
+        analysis_response = self.supervisor_agent.chat(supervisor_prompt)
+        
+        progress_tracker.complete_task(
+            self.session_id,
+            analysis_task_id,
+            "Analysis completed"
+        )
+        
+        # Update stage to report generation
+        progress_tracker.update_stage(self.session_id, ResearchStage.REPORT_GENERATION)
+        
+        # Add report generation task
+        report_task_id = progress_tracker.add_task(
+            self.session_id,
+            "Generating Research Report",
+            "Creating the final comprehensive research report"
+        )["task_id"]
+        progress_tracker.start_task(self.session_id, report_task_id)
+        
+        # Generate final report
+        final_report_prompt = f"""
+Based on your analysis of the research findings, please create a comprehensive final report for the question:
+
+{question}
+
+The report should include:
+1. An executive summary
+2. Key findings
+3. Detailed analysis organized by topic
+4. Conclusions and implications
+5. Citations for all sources used
+
+Ensure the report is well-structured, insightful, and properly cited.
+"""
+        
+        final_report_response = self.supervisor_agent.chat(final_report_prompt)
+        
+        progress_tracker.complete_task(
+            self.session_id,
+            report_task_id,
+            "Report generation completed"
+        )
+        
+        # Update stage to complete
+        progress_tracker.update_stage(self.session_id, ResearchStage.COMPLETE)
+        progress_tracker.complete_session(self.session_id)
+        
+        # Track token usage from supervisor
+        if hasattr(self.supervisor_agent, "token_usage"):
+            self.token_usage.add_tracker(self.supervisor_agent.token_usage)
+        
+        # Calculate total time
+        end_time = time.time()
+        time_taken = end_time - start_time
+        
+        # Return the final report and metadata
+        return {
+            "question": question,
+            "report": final_report_response.content,
+            "research_plan": research_plan,
+            "topics_researched": [r["topic"] for r in topic_results],
+            "token_usage": self.token_usage.get_usage(),
+            "time_taken_seconds": time_taken,
+            "session_id": self.session_id
+        }
+    
+    def _extract_topics_from_plan(self, research_plan: str) -> List[str]:
+        """Extract research topics from the supervisor's research plan"""
+        # This is a simplified approach - in production you'd want more robust parsing
+        lines = research_plan.split("\n")
+        topics = []
+        
+        current_topic = []
+        for line in lines:
+            # Look for topic headers (common formats in research plans)
+            if any(line.strip().startswith(marker) for marker in ["#", "Topic", "Subtopic", "Research Area"]):
+                if current_topic:
+                    topics.append("\n".join(current_topic))
+                    current_topic = []
+                current_topic.append(line.strip())
+            elif current_topic:
+                current_topic.append(line.strip())
+        
+        # Add the last topic if there is one
+        if current_topic:
+            topics.append("\n".join(current_topic))
+        
+        # If no topics were found with the markers, fall back to splitting by newlines
+        if not topics:
+            # Use non-empty lines as potential topics
+            topics = [line.strip() for line in lines if line.strip() and len(line.strip()) > 10]
+        
+        return topics[:min(len(topics), 5)]  # Limit to at most 5 topics for efficiency

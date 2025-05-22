@@ -1,14 +1,22 @@
 from enum import Enum
 from logging import getLogger
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, List, Optional, Dict, Any
 
 from agno.agent import Agent, AgentKnowledge
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Request, Body
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agents.agno_assist import get_agno_assist_knowledge
-from agents.selector import AgentType, get_agent, get_available_agents
+from agents.selector import AgentType, get_agent, get_available_agents, get_agent_by_id
+from agents.deep_research_agent import (
+    DeepResearchAgent, 
+    create_deep_research_agent,
+    create_supervisor_agent,
+    create_researcher_agent
+)
+from api.models import ResearchRequest, PlaygroundStatus
+from agents.progress_tracker import progress_tracker, ResearchStage
 
 logger = getLogger(__name__)
 
@@ -132,3 +140,57 @@ async def load_agent_knowledge(agent_id: AgentType):
         )
 
     return {"message": f"Knowledge base for {agent_id} loaded successfully."}
+
+
+class ResearchProgressRequest(BaseModel):
+    session_id: str
+
+@agents_router.get("/research/progress/{session_id}")
+async def get_research_progress(session_id: str):
+    """
+    Get the progress status of a research task
+    """
+    progress_data = progress_tracker.get_session_status(session_id)
+    if "error" in progress_data:
+        raise HTTPException(status_code=404, detail=progress_data["error"])
+    
+    return progress_data
+
+@agents_router.get("/research/progress/{session_id}/details")
+async def get_detailed_research_progress(session_id: str):
+    """
+    Get detailed progress information of a research task including history
+    """
+    progress_data = progress_tracker.get_full_session_details(session_id)
+    if "error" in progress_data:
+        raise HTTPException(status_code=404, detail=progress_data["error"])
+    
+    return progress_data
+
+@agents_router.post("/deep-research")
+async def execute_deep_research(request: ResearchRequest):
+    """
+    Execute a deep research request using the Deep Research Agent system.
+    Returns a detailed report on the topic with cited sources.
+    """
+    try:
+        # Initialize the Deep Research Agent
+        agent = create_deep_research_agent()
+        
+        # Execute the research and get results
+        results = agent.execute_research(request.query)
+        
+        # Return results along with the session_id for progress tracking
+        return {
+            "session_id": results.get("session_id"),
+            "report": results.get("report"),
+            "topics_researched": results.get("topics_researched", []),
+            "time_taken_seconds": results.get("time_taken_seconds"),
+            "token_usage": results.get("token_usage"),
+        }
+    except Exception as e:
+        logger.exception(f"Error executing deep research: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to execute deep research: {str(e)}"
+        )
