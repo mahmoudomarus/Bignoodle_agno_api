@@ -781,12 +781,13 @@ class DeepResearchAgent:
         self.token_usage = TokenUsageTracker()
         self.session_id = None
         
-    def execute_research(self, question: str) -> Dict[str, Any]:
+    def execute_research(self, question: str, chunk_size: int = 3000) -> Dict[str, Any]:
         """Execute deep research on a question"""
         start_time = time.time()
         
-        # Create a new progress tracking session
-        self.session_id = progress_tracker.create_session()
+        # Create a new progress tracking session if not already created
+        if not self.session_id:
+            self.session_id = progress_tracker.create_session()
         progress_tracker.update_stage(self.session_id, ResearchStage.PLANNING)
         
         # Log the research question
@@ -800,15 +801,18 @@ class DeepResearchAgent:
         )["task_id"]
         progress_tracker.start_task(self.session_id, planning_task_id)
         
-        # First, let the supervisor plan the research
-        supervisor_response = self.supervisor_agent.chat(f"""
+        # First, let the supervisor plan the research with a clear token limit
+        planning_prompt = f"""
 You are coordinating a research task. The research question is:
 
 {question}
 
-Please provide a detailed research plan with subtopics to explore.
+Please provide a detailed research plan with 3-5 subtopics to explore.
 Include specific questions to investigate for each subtopic.
-""")
+Keep your response under 1200 words.
+"""
+        
+        supervisor_response = self.supervisor_agent.chat(planning_prompt)
         
         progress_tracker.complete_task(
             self.session_id, 
@@ -826,6 +830,9 @@ Include specific questions to investigate for each subtopic.
         # Parse research plan to extract subtopics (simplified approach)
         topics = self._extract_topics_from_plan(research_plan)
         
+        # Limit to at most 4 topics to avoid token limit issues
+        topics = topics[:min(len(topics), 4)]
+        
         # Research each topic
         topic_results = []
         for i, topic in enumerate(topics):
@@ -840,17 +847,24 @@ Include specific questions to investigate for each subtopic.
             # Create a fresh researcher agent for each topic
             researcher = self.researcher_agent_factory(tools=self.tools)
             
-            # Execute research on this topic
+            # Execute research on this topic with clear token limit guidance
             logging.info(f"Researching topic: {topic}")
-            researcher_response = researcher.chat(f"""
+            researcher_prompt = f"""
 Please research the following topic thoroughly:
 
 {topic}
 
 This is part of a larger research question: {question}
 
+IMPORTANT CONSTRAINTS:
+1. Keep your response under {chunk_size} tokens
+2. Focus on high-quality information rather than quantity
+3. Use Tavily search exclusively for web information
+4. Cite all sources properly with URLs
+
 Provide detailed findings with proper citations to sources.
-""")
+"""
+            researcher_response = researcher.chat(researcher_prompt)
             
             # Store results
             topic_results.append({
@@ -879,27 +893,23 @@ Provide detailed findings with proper citations to sources.
         )["task_id"]
         progress_tracker.start_task(self.session_id, analysis_task_id)
         
-        # Combine all research findings
-        combined_findings = "\n\n".join([
-            f"## {result['topic']}\n\n{result['findings']}"
-            for result in topic_results
-        ])
-        
-        # Ask supervisor to analyze and synthesize findings
-        supervisor_prompt = f"""
-You now have the research findings on all subtopics related to the main question:
+        # Process topic results one by one to avoid token limits
+        total_findings = ""
+        for i, result in enumerate(topic_results):
+            synthesis_prompt = f"""
+You're analyzing research on: {question}
 
-{question}
+Here is research on subtopic {i+1}/{len(topic_results)}:
+Topic: {result['topic']}
 
-Here are the detailed findings:
+Findings:
+{result['findings']}
 
-{combined_findings}
-
-Please analyze these findings and create a comprehensive synthesis.
-Identify key insights, patterns, and gaps in the research.
+Please synthesize the key points from these findings in 400 words or less.
+Focus on extracting the most important insights relevant to the main question.
 """
-        
-        analysis_response = self.supervisor_agent.chat(supervisor_prompt)
+            synthesis_response = self.supervisor_agent.chat(synthesis_prompt)
+            total_findings += f"\n\n## {result['topic']}\n\n{synthesis_response.content}"
         
         progress_tracker.complete_task(
             self.session_id,
@@ -918,15 +928,23 @@ Identify key insights, patterns, and gaps in the research.
         )["task_id"]
         progress_tracker.start_task(self.session_id, report_task_id)
         
-        # Generate final report
+        # Generate final report with clear token limit guidance
         final_report_prompt = f"""
 Based on your analysis of the research findings, please create a comprehensive final report for the question:
 
 {question}
 
+IMPORTANT CONSTRAINTS:
+1. Keep your total response under 8000 tokens
+2. Focus on quality over quantity
+3. Ensure the report is well-structured and flows logically
+
+Here's the synthesized research findings to use:
+{total_findings}
+
 The report should include:
-1. An executive summary
-2. Key findings
+1. An executive summary (200 words max)
+2. Key findings (concise bullet points)
 3. Detailed analysis organized by topic
 4. Conclusions and implications
 5. Citations for all sources used
@@ -944,6 +962,15 @@ Ensure the report is well-structured, insightful, and properly cited.
         
         # Update stage to complete
         progress_tracker.update_stage(self.session_id, ResearchStage.COMPLETE)
+        
+        # Store report data for later retrieval
+        progress_tracker.store_session_data(self.session_id, {
+            "report": final_report_response.content,
+            "topics_researched": [r["topic"] for r in topic_results],
+            "token_usage": self.token_usage.get_usage(),
+            "time_taken_seconds": time.time() - start_time
+        })
+        
         progress_tracker.complete_session(self.session_id)
         
         # Track token usage from supervisor
