@@ -78,7 +78,7 @@ class AdvancedReasoningTool(Tool):
     def __init__(self):
         tool_types = [
             ToolType(
-                name="chain_of_thought_reasoning",
+                name="reason_chain_of_thought",
                 description="Break down complex reasoning tasks into step-by-step logical deductions.",
                 function=self.chain_of_thought,
                 args={
@@ -93,7 +93,7 @@ class AdvancedReasoningTool(Tool):
                 },
             ),
             ToolType(
-                name="compare_and_contrast",
+                name="reason_compare_and_contrast",
                 description="Compare and contrast multiple concepts, findings, or sources.",
                 function=self.compare_and_contrast,
                 args={
@@ -108,7 +108,7 @@ class AdvancedReasoningTool(Tool):
                 },
             ),
             ToolType(
-                name="synthesize_findings",
+                name="reason_synthesize_findings",
                 description="Synthesize multiple pieces of information into coherent insights.",
                 function=self.synthesize_findings,
                 args={
@@ -136,20 +136,67 @@ class AdvancedReasoningTool(Tool):
         Returns:
             A structured reasoning process with steps and conclusion
         """
-        # This would normally call an external reasoning service
-        # Here we're providing a structured format for the agent to use
-        return {
-            "question": question,
-            "reasoning_framework": "step-by-step logical deduction",
-            "instructions": "Break this problem down into clear steps, analyzing each component separately before combining insights.",
-            "reasoning_template": {
-                "step_1": "Define key terms and concepts",
-                "step_2": "Identify relevant factors and variables",
-                "step_3": "Analyze relationships between factors",
-                "step_4": "Consider alternative perspectives",
-                "step_5": "Draw evidence-based conclusions",
+        # Create an OpenAI client to actually perform the reasoning
+        try:
+            from api.settings import settings
+            import openai
+            
+            client = openai.OpenAI(api_key=settings.openai_api_key)
+            
+            # Construct a reasoning prompt that forces step by step thinking
+            reasoning_prompt = f"""
+            You need to break down this complex question using step-by-step logical reasoning.
+            
+            QUESTION: {question}
+            
+            CONTEXT: {context}
+            
+            Think through this problem systematically:
+            1. First, clearly define any key terms or concepts in the question
+            2. Identify the core issues or variables that need to be considered
+            3. Analyze how these elements relate to each other
+            4. Consider alternative perspectives or interpretations
+            5. Draw evidence-based conclusions
+            
+            Provide your detailed reasoning process and final conclusion.
+            """
+            
+            # Make the API call to get detailed reasoning
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",  # Using a faster model for tools
+                messages=[
+                    {"role": "system", "content": "You are a logical reasoning assistant that breaks down complex problems step-by-step."},
+                    {"role": "user", "content": reasoning_prompt}
+                ],
+                temperature=0.2,
+                max_tokens=1000,
+            )
+            
+            # Extract the reasoning from the response
+            reasoning = response.choices[0].message.content if response.choices else "Error performing reasoning"
+            
+            # Return a structured result with the actual reasoning
+            return {
+                "question": question,
+                "reasoning_process": reasoning,
+                "conclusion": "See the final part of the reasoning process above."
             }
-        }
+            
+        except Exception as e:
+            # Fall back to template if there's an error
+            return {
+                "question": question,
+                "error": f"Error performing reasoning: {str(e)}",
+                "reasoning_framework": "step-by-step logical deduction",
+                "instructions": "Break this problem down into clear steps, analyzing each component separately before combining insights.",
+                "reasoning_template": {
+                    "step_1": "Define key terms and concepts",
+                    "step_2": "Identify relevant factors and variables",
+                    "step_3": "Analyze relationships between factors",
+                    "step_4": "Consider alternative perspectives",
+                    "step_5": "Draw evidence-based conclusions",
+                }
+            }
     
     def compare_and_contrast(self, items: str, criteria: str) -> Dict:
         """
@@ -166,17 +213,64 @@ class AdvancedReasoningTool(Tool):
             items_data = json.loads(items)
             criteria_list = [c.strip() for c in criteria.split(",")]
             
-            # Create a comparison matrix template
-            comparison = {
+            # Create a comparison prompt for the LLM
+            comparison_prompt = f"""
+            You need to compare and contrast the following items across specific criteria.
+            
+            ITEMS TO COMPARE:
+            {json.dumps(items_data, indent=2)}
+            
+            COMPARISON CRITERIA:
+            {criteria}
+            
+            For each item and criterion:
+            1. Analyze how the item performs or relates to that criterion
+            2. Note similarities and differences between items
+            3. Highlight strengths and weaknesses
+            
+            Then provide an overall synthesis of patterns, insights, and conclusions from this comparison.
+            """
+            
+            # Create an OpenAI client to perform the comparison
+            from api.settings import settings
+            import openai
+            
+            client = openai.OpenAI(api_key=settings.openai_api_key)
+            
+            # Make the API call
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",  # Using a faster model for tools
+                messages=[
+                    {"role": "system", "content": "You are a comparative analysis expert who excels at structured comparison."},
+                    {"role": "user", "content": comparison_prompt}
+                ],
+                temperature=0.2,
+                max_tokens=1500,
+            )
+            
+            # Extract the comparison from the response
+            comparison_analysis = response.choices[0].message.content if response.choices else "Error performing comparison"
+            
+            # Return a structured result with the actual comparison
+            return {
                 "items": [item["name"] for item in items_data],
                 "criteria": criteria_list,
+                "comparison_analysis": comparison_analysis
+            }
+            
+        except json.JSONDecodeError:
+            return {"error": "Invalid JSON format for items. Please provide properly formatted data."}
+        except Exception as e:
+            # Fall back to template if there's an error
+            comparison = {
+                "items": items,
+                "criteria": criteria,
+                "error": f"Error performing comparison: {str(e)}",
                 "analysis_framework": "structured comparison matrix",
                 "instructions": "Fill in this comparison matrix, analyzing each item against each criterion. Then synthesize overall patterns and insights."
             }
             
             return comparison
-        except json.JSONDecodeError:
-            return {"error": "Invalid JSON format for items."}
     
     def synthesize_findings(self, findings: str, perspective: str) -> Dict:
         """
@@ -192,9 +286,60 @@ class AdvancedReasoningTool(Tool):
         try:
             findings_data = json.loads(findings)
             
+            # Create a synthesis prompt for the LLM
+            synthesis_prompt = f"""
+            You need to synthesize the following research findings from a {perspective} perspective.
+            
+            RESEARCH FINDINGS:
+            {json.dumps(findings_data, indent=2)}
+            
+            ANALYTICAL PERSPECTIVE: {perspective}
+            
+            Your synthesis should:
+            1. Identify key themes and patterns across all sources
+            2. Note agreements and contradictions between sources
+            3. Evaluate the quality and reliability of each source
+            4. Integrate insights into a cohesive narrative
+            5. Apply a {perspective} perspective to draw deeper meaning
+            
+            Provide a comprehensive synthesis that goes beyond summarizing to generate new insights.
+            """
+            
+            # Create an OpenAI client to perform the synthesis
+            from api.settings import settings
+            import openai
+            
+            client = openai.OpenAI(api_key=settings.openai_api_key)
+            
+            # Make the API call
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",  # Using a faster model for tools
+                messages=[
+                    {"role": "system", "content": f"You are a research synthesis expert with expertise in {perspective} analysis."},
+                    {"role": "user", "content": synthesis_prompt}
+                ],
+                temperature=0.2,
+                max_tokens=1500,
+            )
+            
+            # Extract the synthesis from the response
+            synthesis_analysis = response.choices[0].message.content if response.choices else "Error performing synthesis"
+            
+            # Return a structured result with the actual synthesis
+            return {
+                "source_count": len(findings_data),
+                "analytical_perspective": perspective,
+                "synthesis": synthesis_analysis
+            }
+            
+        except json.JSONDecodeError:
+            return {"error": "Invalid JSON format for findings. Please provide properly formatted data."}
+        except Exception as e:
+            # Fall back to template if there's an error
             return {
                 "synthesis_framework": f"{perspective} analysis",
-                "source_count": len(findings_data),
+                "source_count": "unknown (invalid JSON)",
+                "error": f"Error performing synthesis: {str(e)}",
                 "synthesis_process": {
                     "step_1": "Identify key themes across all sources",
                     "step_2": "Note agreements and contradictions between sources",
@@ -203,8 +348,6 @@ class AdvancedReasoningTool(Tool):
                     "step_5": f"Apply {perspective} perspective to draw deeper meaning"
                 }
             }
-        except json.JSONDecodeError:
-            return {"error": "Invalid JSON format for findings."}
 
 
 class SupervisorToolKit(Tool):
@@ -737,7 +880,7 @@ class CryptoAwareAgent(Agent):
             "mining", "staking", "validator", "consensus", "mainnet", "testnet",
             "btc", "eth", "sol", "bnb", "xrp", "ada", "avax", "tron", "tap protocol",
             "tap", "trac", "dmt", "digital matter theory", "bitmaps", "nat token", "hiros",
-            "snat", "sovyrn", "satoshi", "bitcoin ordinals"
+            "snat", "sovyrn", "satoshi", "bitcoin ordinals", "$nat", "runes"
         ]
     
     def _is_crypto_related(self, text):
@@ -751,84 +894,89 @@ class CryptoAwareAgent(Agent):
                 return True
         return False
     
+    def _is_information_seeking(self, text):
+        """Detect if this is an information-seeking query that should trigger search"""
+        if not text:
+            return False
+            
+        info_patterns = [
+            "what is", "how does", "explain", "tell me about", "describe", 
+            "who is", "when was", "where is", "why is", "research", "information on",
+            "details about", "history of", "can you provide", "find information",
+            "?", "learn about", "understand", "overview of"
+        ]
+        
+        text_lower = text.lower()
+        for pattern in info_patterns:
+            if pattern in text_lower:
+                return True
+        return False
+    
+    def _find_tavily_search_tool(self):
+        """Find the tavily search tool in the available tools"""
+        for tool in self.tools:
+            if hasattr(tool, 'tool_types'):
+                for tt in tool.tool_types:
+                    if 'tavily_search' in tt.name or 'search' in tt.name:
+                        return tt.name
+        return None
+    
     def run(self, prompt: str, **kwargs):
         """
         Override the run method to:
-        1. Force using Tavily search for crypto terms
+        1. Force using Tavily search for any information-seeking query
         2. Completely disable financial tools for crypto queries
         3. Force tool usage for all queries requiring research
         """
-        # Check if this is a crypto-related query
+        # Always check if this is a crypto-related and/or information-seeking query
         is_crypto_query = self._is_crypto_related(prompt)
-        detected_term = None
+        is_info_seeking = self._is_information_seeking(prompt)
         
-        if is_crypto_query:
-            for term in self.crypto_terms:
-                if term.lower() in prompt.lower():
-                    detected_term = term
-                    break
-            
-            # Create a modified list of tools that excludes financial tools
-            filtered_tools = []
-            search_tool = None
-            
-            for tool in self.tools:
-                # Find the Tavily search tool and prioritize it
-                if hasattr(tool, 'tool_types') and any('tavily_search' in tt.name for tt in tool.tool_types):
-                    search_tool = tool
-                    filtered_tools.append(tool)
-                # Skip financial tools for crypto queries
-                elif not any(financial_name in str(tool.__class__).lower() for financial_name in ['yfinance', 'financial', 'stock', 'company']):
-                    filtered_tools.append(tool)
-            
-            # Ensure search tool is first in the list if found
-            if search_tool and search_tool in filtered_tools:
-                filtered_tools.remove(search_tool)
-                filtered_tools.insert(0, search_tool)
-            
-            # Save original tools and replace with filtered list
-            original_tools = self.tools
-            self.tools = filtered_tools
-            
-            # Create an enhanced prompt that forces using Tavily search
-            enhanced_prompt = f"""
-[CRITICAL INSTRUCTION]
-This query is about {detected_term}, which is a CRYPTOCURRENCY/BLOCKCHAIN topic.
+        # Find search tool
+        tavily_search_name = self._find_tavily_search_tool()
+        
+        # Create a completely modified prompt if this is an information query
+        if is_info_seeking or "research" in prompt.lower():
+            # This is the critical change - for ANY information query, we inject
+            # instructions that FORCE using tavily search first
+            modified_prompt = f"""
+[CRITICAL TOOL USAGE INSTRUCTION - HIGHEST PRIORITY]
 
-You MUST follow these exact steps:
-1. ALWAYS use tavily_search as your FIRST tool
-2. You are FORBIDDEN from using GET_COMPANY_INFO, GET_COMPANY_NEWS or any financial tools
-3. DO NOT confuse this with any stock symbol or traditional company
+You are responding to an information request: "{prompt}"
 
-You MUST conduct real research using tavily_search before answering. 
-DO NOT rely on memory or provide answers without searching first.
+Before answering, you MUST:
+1. Use tavily_search as your FIRST tool to gather current, accurate information
+2. NEVER answer solely from memory without verifying with search
+3. Use multiple search queries to explore different aspects of the topic
+4. Cite your sources with proper links
 
-USER QUERY: {prompt}
+For ANY information question, search is MANDATORY - not optional.
+
 """
             
-            # Run with the enhanced prompt
-            result = super().run(enhanced_prompt, **kwargs)
-            
-            # Restore original tools
-            self.tools = original_tools
-            
-            return result
-        else:
-            # For all other non-crypto queries, enforce using search for questions
-            if any(q in prompt.lower() for q in ["what is", "how does", "explain", "tell me about", "?"]):
-                enhanced_prompt = f"""
-[IMPORTANT INSTRUCTION]
-For this research question, you MUST:
-1. Use tavily_search as your FIRST tool to find current information
-2. Do NOT answer solely from memory - conduct actual research
-3. You MUST search for information before providing an answer
+            # Add crypto-specific instructions if needed
+            if is_crypto_query:
+                term = next((term for term in self.crypto_terms if term.lower() in prompt.lower()), "crypto term")
+                modified_prompt += f"""
+CRYPTO DOMAIN DETECTED: This query includes "{term}" which is a CRYPTOCURRENCY/BLOCKCHAIN topic.
 
-USER QUERY: {prompt}
+For cryptocurrency topics, you MUST additionally:
+1. ONLY use tavily_search for research - NEVER use financial tools
+2. DO NOT treat crypto tokens/protocols as companies or stocks
+3. Look for the latest information as the crypto space changes rapidly
+4. Pay special attention to tokenomics, technology, and recent developments
+5. Use official documentation and trusted crypto sources when possible
+
 """
-                return super().run(enhanced_prompt, **kwargs)
             
-            # For other standard queries, use normal processing
-            return super().run(prompt, **kwargs)
+            # Append the original prompt
+            modified_prompt += f"\nUSER QUERY: {prompt}\n"
+            
+            # Run with the heavily modified prompt that forces search
+            return super().run(modified_prompt, **kwargs)
+        
+        # For standard queries, still override but with less aggressive modification
+        return super().run(prompt, **kwargs)
             
     def select_tool(self, tool_name: str, args: dict, follow_up: str = None):
         """Override tool selection to prevent financial tools for crypto queries"""

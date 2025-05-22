@@ -3,173 +3,119 @@ import os
 from typing import Any, Dict, List, Optional, Union
 
 import requests
+import logging
+from textwrap import dedent
 
 from agents.base_tools import Tool, ToolType, ToolTypeArgs
 
+logger = logging.getLogger(__name__)
 
 class TavilyTools(Tool):
     """
-    A class that provides tools for interacting with the Tavily search API.
+    Tools for Tavily search API.
     """
 
     def __init__(
         self,
         api_key: Optional[str] = None,
         search_depth: str = "advanced",
-        max_results: int = 15,
+        max_results: int = 20,
         include_domains: Optional[List[str]] = None,
         exclude_domains: Optional[List[str]] = None,
         include_answer: bool = True,
         include_raw_content: bool = True,
-        include_images: bool = False,
+        name_override: str = "web_search"  # Changed from tavily_search to web_search
     ):
-        """
-        Initialize the TavilyTools class.
-
-        Args:
-            api_key: The Tavily API key. If not provided, it will be read from environment variables.
-            search_depth: The depth of the search. Either "basic" or "advanced".
-            max_results: The maximum number of results to return.
-            include_domains: A list of domains to include in the search.
-            exclude_domains: A list of domains to exclude from the search.
-            include_answer: Whether to include an answer in the response.
-            include_raw_content: Whether to include raw content in the response.
-            include_images: Whether to include images in the response.
-        """
-        # Use provided API key, or try environment variable, or use fallback
-        self.api_key = api_key or os.environ.get("TAVILY_API_KEY") or "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"
-        
+        self.api_key = api_key or os.environ.get("TAVILY_API_KEY")
         self.search_depth = search_depth
         self.max_results = max_results
-        self.include_domains = include_domains or []
-        self.exclude_domains = exclude_domains or []
+        self.include_domains = include_domains
+        self.exclude_domains = exclude_domains
         self.include_answer = include_answer
         self.include_raw_content = include_raw_content
-        self.include_images = include_images
         
+        # Strong system instruction to prioritize using this tool
+        tavily_system_instruction = dedent("""
+        [CRITICAL TOOL USAGE INSTRUCTION]
+        This is your primary web search tool that MUST be used for ALL information questions.
+        ALWAYS verify information using this tool before answering questions.
+        NEVER answer solely from memory for any factual query.
+        """)
+
         tool_types = [
             ToolType(
-                name="tavily_search",
-                description="Search the web for information on a specific topic using Tavily's powerful search engine. This is the PRIMARY research tool for web-based information gathering.",
+                name=name_override,  # Using the name override
+                description=f"Search the web for real-time information about any topic. {tavily_system_instruction}",
                 function=self.search,
                 args={
                     "query": {
                         "type": "string",
-                        "description": "The search query",
-                    },
-                    "search_depth": {
-                        "type": "string",
-                        "description": "Search depth: 'basic' for quick results, 'advanced' for thorough research",
+                        "description": "The search query to look up information on the web",
                     }
                 },
-            ),
-            ToolType(
-                name="tavily_news_search",
-                description="Search for recent news articles on a specific topic using Tavily's news search capabilities.",
-                function=self.search_news,
-                args={
-                    "query": {
-                        "type": "string",
-                        "description": "The news search query",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of news articles to return",
-                    }
-                },
-            ),
-            ToolType(
-                name="tavily_topic_search",
-                description="Perform a specialized topic search with specific filters and parameters.",
-                function=self.search_topic,
-                args={
-                    "topic": {
-                        "type": "string",
-                        "description": "The specific topic to research",
-                    },
-                    "include_domains": {
-                        "type": "string",
-                        "description": "Comma-separated list of domains to include (e.g., 'nytimes.com,forbes.com')",
-                    },
-                    "exclude_domains": {
-                        "type": "string",
-                        "description": "Comma-separated list of domains to exclude",
-                    },
-                    "time_period": {
-                        "type": "string",
-                        "description": "Time period for results (recent, past_week, past_month, past_year)",
-                    }
-                },
-            ),
+            )
         ]
         super().__init__(tool_types=tool_types)
-    
-    def search(self, query: str, search_depth: Optional[str] = None) -> Dict[str, Any]:
+
+    def search(self, query: str):
         """
-        Search the web for information on a specific topic using Tavily's API.
+        Search the web using the Tavily search API.
         
         Args:
-            query: The search query
-            search_depth: Search depth ('basic' or 'advanced')
+            query: The search query to look up information on the web
             
         Returns:
-            Search results
+            The search results from Tavily
         """
-        depth = search_depth or self.search_depth
+        if not self.api_key:
+            from api.settings import settings
+            self.api_key = settings.tavily_api_key
+            
+        if not self.api_key:
+            return {"error": "Tavily API key not found. Please set the TAVILY_API_KEY environment variable or provide it when initializing the tool."}
         
         try:
-            # Prepare the payload for the Tavily API
-            payload = {
+            # Enhanced logging for better tracking
+            logger.info(f"Performing Tavily search for query: '{query}' with depth={self.search_depth}, max_results={self.max_results}")
+            
+            # Construct the search parameters
+            search_params = {
+                "api_key": self.api_key,
                 "query": query,
-                "search_depth": depth,
+                "search_depth": self.search_depth,
                 "max_results": self.max_results,
                 "include_answer": self.include_answer,
                 "include_raw_content": self.include_raw_content,
-                "include_images": self.include_images,
             }
             
+            # Add optional parameters if specified
             if self.include_domains:
-                payload["include_domains"] = self.include_domains
+                search_params["include_domains"] = self.include_domains
             if self.exclude_domains:
-                payload["exclude_domains"] = self.exclude_domains
-            
-            # Make the API request
+                search_params["exclude_domains"] = self.exclude_domains
+                
+            # Execute the search using the Tavily API
             response = requests.post(
                 "https://api.tavily.com/search",
-                headers={"content-type": "application/json", "x-api-key": self.api_key},
-                json=payload,
+                json=search_params,
+                timeout=60  # Increase timeout for deep searches
             )
             
-            # Check for errors
-            response.raise_for_status()
-            
-            # Parse the response
-            result = response.json()
-            
-            # Format the results
-            formatted_results = []
-            for item in result.get("results", []):
-                formatted_results.append({
-                    "title": item.get("title", "No title"),
-                    "url": item.get("url", ""),
-                    "content": item.get("content", "No content available"),
-                    "score": item.get("score", 0),
-                    "source": item.get("source", "Unknown source"),
-                })
-            
-            return {
-                "answer": result.get("answer", ""),
-                "results": formatted_results,
-                "result_count": len(formatted_results),
-                "search_depth": depth,
-                "query": query,
-            }
-        
-        except requests.exceptions.RequestException as e:
-            return {
-                "error": f"Error searching Tavily: {str(e)}",
-                "query": query,
-            }
+            # Check if the search was successful
+            if response.status_code == 200:
+                results = response.json()
+                result_count = len(results.get("results", []))
+                logger.info(f"Tavily search successful. Retrieved {result_count} results for query: '{query}'")
+                return results
+            else:
+                error_message = f"Tavily API error: {response.status_code} - {response.text}"
+                logger.error(error_message)
+                return {"error": error_message}
+                
+        except Exception as e:
+            error_message = f"Error performing Tavily search: {str(e)}"
+            logger.error(error_message)
+            return {"error": error_message}
     
     def search_news(self, query: str, max_results: Optional[int] = None) -> Dict[str, Any]:
         """
