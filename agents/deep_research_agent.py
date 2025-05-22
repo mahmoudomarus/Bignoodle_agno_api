@@ -18,6 +18,41 @@ from db.session import db_url
 from agents.progress_tracker import progress_tracker, ResearchStage
 
 
+# Token usage tracker class for monitoring token consumption
+class TokenUsageTracker:
+    """Tracks token usage across multiple operations"""
+    
+    def __init__(self):
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        
+    def add_usage(self, prompt_tokens: int, completion_tokens: int):
+        """Add token usage from a single operation"""
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+        self.total_tokens = self.prompt_tokens + self.completion_tokens
+        
+    def add_tracker(self, tracker):
+        """Add usage from another tracker or compatible object"""
+        if hasattr(tracker, 'prompt_tokens'):
+            self.prompt_tokens += tracker.prompt_tokens
+        if hasattr(tracker, 'completion_tokens'):
+            self.completion_tokens += tracker.completion_tokens
+        if hasattr(tracker, 'total_tokens'):
+            # If the object tracks total directly, ensure our total is recalculated
+            pass
+        self.total_tokens = self.prompt_tokens + self.completion_tokens
+        
+    def get_usage(self):
+        """Get the current token usage summary"""
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens
+        }
+
+
 class AdvancedReasoningTool(Tool):
     """
     A tool that provides advanced reasoning capabilities for complex research scenarios.
