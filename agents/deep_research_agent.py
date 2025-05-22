@@ -953,10 +953,12 @@ class DeepResearchAgent:
 
     def __init__(
         self,
-        supervisor_agent: Agent,
+        supervisor_agent: Agent = None,
         tools: List[Tool] = None,
         researcher_agent_factory=None,
         max_iterations: int = 5,
+        model: str = "chatgpt-4o-latest",
+        logger=None,
     ):
         self.supervisor_agent = supervisor_agent
         self.tools = tools or []
@@ -965,13 +967,27 @@ class DeepResearchAgent:
         self.token_usage = TokenUsageTracker()
         self.session_id = None
         
-    async def execute_research(self, question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        # New attributes for simplified implementation
+        self.model = model
+        self.logger = logger or logging.getLogger()
+        
+        # Set up progress tracker
+        from agents.progress_tracker import progress_tracker
+        self.progress_tracker = progress_tracker
+        
+        # OpenAI client
+        import openai
+        from api.config import settings
+        self.client = openai.OpenAI(api_key=settings.openai_api_key)
+        
+    async def execute_research(self, question: str, session_id: Optional[str] = None, timeout_seconds: int = 600) -> Dict[str, Any]:
         """
         Execute research on the given question using a simplified approach.
         
         Args:
             question: The research question to answer
             session_id: Optional session ID to use
+            timeout_seconds: Maximum time in seconds allowed for research (default: 10 minutes)
             
         Returns:
             Dictionary with research results
