@@ -22,7 +22,8 @@ def get_available_agents() -> List[str]:
     Returns:
         list[str]: List of available agent types.
     """
-    return [agent.value for agent in AgentType]
+    # Only return the Deep Research agent type
+    return [AgentType.DEEP_RESEARCH.value]
 
 
 def get_agent_by_id(agent_id: str, model_id: str = "gpt-4.1", user_id: Optional[str] = None, session_id: Optional[str] = None) -> Agent:
