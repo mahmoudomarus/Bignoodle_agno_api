@@ -1480,6 +1480,20 @@ class DeepResearchAgent:
                     is_crypto = True
                     domain = "cryptocurrency"
                     logging.info("Forced TAP Protocol to be classified as cryptocurrency")
+                    
+                    # Update the progress tracker immediately with the correct classification
+                    if session_id:
+                        try:
+                            progress_tracker.update_meta(
+                                session_id, 
+                                {
+                                    "domain": "cryptocurrency",
+                                    "is_crypto": True
+                                }
+                            )
+                            logging.info("Updated progress tracker with forced crypto classification for TAP Protocol")
+                        except Exception as e:
+                            logging.error(f"Error updating progress tracker for TAP Protocol: {str(e)}")
             
             # Log the generated plan
             logging.info(f"Research plan generated. Domain: {domain}, Is crypto: {is_crypto}")
