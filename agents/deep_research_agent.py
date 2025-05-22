@@ -740,17 +740,10 @@ def get_deep_research_agent(
     Returns:
         A new Deep Research agent
     """
-    # Create the supervisor tools that can spawn researcher agents
-    supervisor_tools = SupervisorToolKit(
-        create_researcher_fn=create_researcher_agent,
-        model_id=model_id,
-        user_id=user_id,
-    )
-    
     # Configure Tavily with advanced search capabilities
     tavily_tools = TavilyTools(
         search_depth="advanced",
-        max_results=20,  # Increased from 15 to 20 for more comprehensive results
+        max_results=20,
         include_answer=True,
         include_raw_content=True,
     )
@@ -758,6 +751,15 @@ def get_deep_research_agent(
     # Create advanced reasoning tools
     reasoning_tools = AdvancedReasoningTool()
     
+    # Create the supervisor tools that can spawn researcher agents
+    supervisor_tools = SupervisorToolKit(
+        create_researcher_fn=create_researcher_agent,
+        model_id=model_id,
+        user_id=user_id,
+    )
+    
+    # IMPORTANT: Order of tools matters for the UI tool selection!
+    # Place Tavily search first so it's the default selected tool for queries
     return Agent(
         name="Deep Research Agent",
         agent_id="deep_research_agent",
@@ -765,10 +767,10 @@ def get_deep_research_agent(
         session_id=session_id,
         model=OpenAIChat(id=model_id),
         tools=[
+            tavily_tools,      # PRIMARY search tool (placed FIRST for UI priority)
+            reasoning_tools,   # Advanced reasoning capabilities 
             supervisor_tools,  # Coordinator for multi-agent research
-            tavily_tools,      # Primary search tool (placed second for importance)
-            reasoning_tools,   # Advanced reasoning capabilities
-            YFinanceTools(     # Financial analysis tools
+            YFinanceTools(     # Financial analysis tools (placed last)
                 stock_price=True,
                 analyst_recommendations=True,
                 stock_fundamentals=True,
@@ -1024,6 +1026,28 @@ class DeepResearchAgent:
                 exclude_domains=None,
             )
             
+            # PRE-ANALYZE QUERY - Detect if this is a crypto/blockchain related query
+            # This helps prevent confusion between crypto protocols and financial instruments
+            crypto_terms = [
+                "protocol", "blockchain", "bitcoin", "ethereum", "crypto", "token", "nft", 
+                "defi", "ordinal", "web3", "dao", "dapp", "smart contract", "wallet", 
+                "mining", "staking", "validator", "consensus", "mainnet", "testnet",
+                "btc", "eth", "sol", "bnb", "xrp", "ada", "avax", "tron", "tap protocol",
+                "tap", "trac", "dmt", "digital matter theory", "bitmaps", "nat token", "hiros"
+            ]
+            
+            is_likely_crypto = False
+            for term in crypto_terms:
+                if term.lower() in question.lower():
+                    is_likely_crypto = True
+                    self.logger.info(f"Detected likely crypto-related query based on term: {term}")
+                    break
+            
+            # If we specifically detect "tap protocol" - ensure we're treating it as crypto
+            if "tap protocol" in question.lower() or "tap" in question.lower():
+                is_likely_crypto = True
+                self.logger.info("Detected TAP protocol query - treating as crypto/blockchain topic")
+            
             # STEP 1: PLANNING PHASE - Break down the research question into topics
             self.logger.info("PLANNING PHASE: Breaking down research question into topics")
             planning_prompt = f"""
@@ -1037,6 +1061,8 @@ class DeepResearchAgent:
             2. For each topic area, explain what specific information should be gathered
             3. Provide 2-3 specific search queries that would be effective for researching each topic area
             4. Indicate if this appears to be about cryptocurrency/blockchain, traditional finance, or another domain
+            
+            {'IMPORTANT: This query contains terms related to cryptocurrency/blockchain. Focus your plan on crypto-specific research areas.' if is_likely_crypto else ''}
             
             For cryptocurrency/blockchain topics, focus on technical details, recent developments, and reliable crypto-specific sources.
             
@@ -1073,11 +1099,16 @@ class DeepResearchAgent:
                 if not topics:
                     topics = [{"name": "Main topic", "description": question, "search_queries": [question]}]
                 
+                # Force domain to cryptocurrency if we detected crypto terms
+                if is_likely_crypto and domain != "cryptocurrency":
+                    self.logger.info(f"Overriding detected domain '{domain}' to 'cryptocurrency' based on term detection")
+                    domain = "cryptocurrency"
+                
                 self.logger.info(f"Generated research plan with {len(topics)} topics in domain: {domain}")
             except Exception as e:
                 self.logger.error(f"Error parsing research plan: {str(e)}")
                 topics = [{"name": "Main topic", "description": question, "search_queries": [question]}]
-                domain = "general"
+                domain = "cryptocurrency" if is_likely_crypto else "general"
             
             # Update progress to research stage
             self.progress_tracker.update_stage(session_id, ResearchStage.RESEARCH)
@@ -1098,16 +1129,39 @@ class DeepResearchAgent:
                 for query_idx, query in enumerate(search_queries[:3]):  # Use up to 3 queries per topic
                     self.logger.info(f"  Query {query_idx+1}/{len(search_queries[:3])}: {query}")
                     
-                    # Special handling for crypto-related queries if domain indicates crypto
-                    if domain.lower() in ["cryptocurrency", "blockchain", "crypto"]:
+                    # Special handling for crypto-related queries 
+                    # This prevents confusion with financial instruments and ensures consistent crypto results
+                    crypto_keywords = []
+                    
+                    # Handle special cases to ensure correct domain understanding
+                    if domain.lower() in ["cryptocurrency", "blockchain", "crypto"] or is_likely_crypto:
                         # Add specific terms to ensure proper results for crypto topics
-                        if "tap protocol" in query.lower() and "crypto" not in query.lower() and "blockchain" not in query.lower():
+                        if "tap" in query.lower() and "protocol" not in query.lower():
+                            query = f"{query} protocol cryptocurrency blockchain"
+                            crypto_keywords.append("protocol")
+                        elif "tap protocol" in query.lower() and "crypto" not in query.lower() and "blockchain" not in query.lower():
                             query = f"{query} cryptocurrency blockchain"
+                            crypto_keywords.append("blockchain")
+                        elif "dmt" in query.lower() and "digital matter" not in query.lower():
+                            query = f"{query} digital matter theory bitcoin ordinals"
+                            crypto_keywords.append("digital matter theory")
+                        elif not any(term in query.lower() for term in ["crypto", "blockchain", "bitcoin", "token", "protocol"]):
+                            # Add general crypto terms if none present
+                            query = f"{query} cryptocurrency blockchain"
+                            crypto_keywords.append("cryptocurrency")
+                    
+                    if crypto_keywords:
+                        self.logger.info(f"  Enhanced query with crypto keywords: {', '.join(crypto_keywords)}")
                     
                     try:
-                        # Execute search with each query
-                        search_result = tavily_tools.search(query)
-                        
+                        # Execute search with each query - NEVER use financial tools for crypto topics
+                        if domain.lower() in ["cryptocurrency", "blockchain", "crypto"] or is_likely_crypto:
+                            # Force using tavily_search for crypto topics to avoid financial tool confusion
+                            search_result = tavily_tools.search(query)
+                        else:
+                            # For non-crypto topics, still use tavily search but with domain-appropriate handling
+                            search_result = tavily_tools.search(query)
+                            
                         if isinstance(search_result, dict) and "results" in search_result:
                             search_results = search_result.get("results", [])
                             # Add all results to the topic results
