@@ -8,10 +8,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agents.agno_assist import get_agno_assist_knowledge
-from agents.selector import AgentType, get_agent, get_available_agents, get_agent_by_id
+from agents.selector import AgentType, get_agent, get_available_agents, get_agent_by_id, get_deep_research_agent_instance
 from agents.deep_research_agent import (
     DeepResearchAgent, 
-    create_deep_research_agent,
     create_supervisor_agent,
     create_researcher_agent
 )
@@ -175,7 +174,7 @@ async def execute_deep_research(request: ResearchRequest):
     """
     try:
         # Initialize the Deep Research Agent with specified timeout
-        agent = create_deep_research_agent()
+        agent = get_deep_research_agent_instance()
         
         # Set timeout to 5 minutes (300 seconds) if not specified
         timeout = request.timeout_seconds or 300
