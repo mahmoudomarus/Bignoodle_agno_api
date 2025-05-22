@@ -958,10 +958,19 @@ class CryptoAwareAgent(Agent):
     def run(self, prompt: str, **kwargs):
         """
         Override the run method to:
-        1. Force using Tavily search for any information-seeking query
-        2. Completely disable financial tools for crypto queries
-        3. Force tool usage for all queries requiring research
+        1. Check if this is a comprehensive research request that should be redirected
+        2. Force using Tavily search for any information-seeking query
+        3. Completely disable financial tools for crypto queries
+        4. Force tool usage for all queries requiring research
         """
+        # First check if this is a comprehensive research request that
+        # should be redirected to the multi-agent research workflow
+        if hasattr(self, 'detect_research_request') and callable(self.detect_research_request):
+            research_response = self.detect_research_request(self, prompt, **kwargs)
+            if research_response:
+                # This is a comprehensive research request, return the session information
+                return research_response
+                
         # Always check if this is a crypto-related and/or information-seeking query
         is_crypto_query = self._is_crypto_related(prompt)
         is_info_seeking = self._is_information_seeking(prompt)
@@ -1151,7 +1160,114 @@ def get_deep_research_agent(
         company_news=True,
     )
     
-    # Define a strong force_tavily_search system message
+    # Add a custom pre-processing function to detect comprehensive research requests 
+    # and redirect them to the multi-agent workflow
+    def detect_research_request(agent, prompt, **kwargs):
+        """
+        Detect if this is a comprehensive research request that should be handled
+        by the multi-agent research workflow instead of a single agent response.
+        """
+        # If we're already in a multi-agent workflow, don't intercept
+        if kwargs.get('in_research_workflow', False):
+            return None  # Continue with normal processing
+            
+        # Check for phrases that indicate a comprehensive research request
+        research_phrases = [
+            "comprehensive research", 
+            "detailed research",
+            "research report", 
+            "in-depth research",
+            "thorough analysis",
+            "detailed analysis",
+            "do research on",
+            "conduct research",
+            "comprehensive report",
+            "detailed report"
+        ]
+        
+        # Check if this looks like a research request
+        is_research_request = False
+        
+        # Check for research phrases
+        if any(phrase in prompt.lower() for phrase in research_phrases):
+            is_research_request = True
+        
+        # Check if it's a long question (likely complex research)
+        if len(prompt.split()) > 15:
+            # Long questions are likely research requests
+            is_research_request = True
+            
+        # Also check for question words + topic
+        research_patterns = [
+            "what are the", "how does", "explain the", "analyze",
+            "compare", "evaluate", "investigate", "examine"
+        ]
+        if any(pattern in prompt.lower() for pattern in research_patterns):
+            # These are likely research-oriented questions
+            is_research_request = True
+            
+        if is_research_request:
+            try:
+                # Import here to avoid circular imports
+                from agents.deep_research_agent import DeepResearchAgent, create_supervisor_agent
+                from agents.progress_tracker import progress_tracker
+                
+                # Create a supervisor agent
+                supervisor = create_supervisor_agent(model_id=model_id, user_id=user_id)
+                
+                # Create a research agent
+                research_agent = DeepResearchAgent(
+                    supervisor_agent=supervisor,
+                    researcher_agent_factory=create_researcher_agent,
+                    model=model_id
+                )
+                
+                # Create a session
+                session_id = progress_tracker.create_session()
+                
+                # Start the research in a background thread
+                import threading
+                
+                def run_research():
+                    try:
+                        # Execute the research with the query
+                        research_agent.execute_research(
+                            research_question=prompt,
+                            session_id=session_id,
+                            debug_mode=debug_mode
+                        )
+                    except Exception as e:
+                        logging.error(f"Error in background research task: {str(e)}")
+                        
+                # Start the research thread
+                research_thread = threading.Thread(target=run_research)
+                research_thread.daemon = True
+                research_thread.start()
+                
+                # Return a message about the research being started
+                return f"""
+📚 **Comprehensive Research Started**
+
+Your question has been submitted to our advanced multi-agent research system.
+
+**Session ID:** `{session_id}`
+
+You can track progress and get your full report at:
+- Progress: `/v1/agents/research/progress/{session_id}`
+- Detailed Progress: `/v1/agents/research/progress/{session_id}/details`
+- Final Report: `/v1/agents/research/report/{session_id}`
+
+The research will be conducted by multiple specialized agents working together to provide a comprehensive, well-cited report.
+                """
+            except Exception as e:
+                logging.error(f"Error starting comprehensive research: {str(e)}")
+                # Fall back to normal processing if research start fails
+                return None
+                
+        # Not a research request or failed to start research
+        return None
+        
+    # Define force_tavily_search system message
     force_tavily_search = dedent("""
     [CRITICAL TOOL USAGE INSTRUCTIONS - HIGHEST PRIORITY]
     
@@ -1331,6 +1447,11 @@ def get_deep_research_agent(
         add_datetime_to_instructions=True,
         debug_mode=debug_mode,
     )
+
+    # Attach the research request detection function to the agent
+    agent.detect_research_request = detect_research_request
+    
+    return agent
 
 
 class DeepResearchAgent:
