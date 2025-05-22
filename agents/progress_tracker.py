@@ -43,6 +43,22 @@ class ProgressTracker:
         }
         return session_id
     
+    def initialize_session(self, session_id: str, question: str) -> Dict[str, Any]:
+        """Initialize a session with the research question"""
+        if session_id not in self.sessions:
+            return {"error": f"Session {session_id} not found"}
+            
+        self.sessions[session_id]["question"] = question
+        self.sessions[session_id]["last_updated"] = time.time()
+        
+        # Add to history
+        self.sessions[session_id]["history"].append({
+            "timestamp": time.time(),
+            "event": f"Session initialized with question: {question[:50]}..." if len(question) > 50 else question
+        })
+        
+        return {"status": "success"}
+    
     def update_stage(self, session_id: str, stage: ResearchStage) -> Dict[str, Any]:
         """Update the current stage of research"""
         if session_id not in self.sessions:

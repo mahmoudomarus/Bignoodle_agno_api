@@ -976,7 +976,7 @@ class DeepResearchAgent:
         Returns:
             Dict containing the research report and metadata
         """
-        from agno.progress_tracker import progress_tracker, ResearchStage
+        from agents.progress_tracker import progress_tracker, ResearchStage
         import time
         import logging
         
