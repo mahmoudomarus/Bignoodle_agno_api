@@ -724,46 +724,140 @@ def create_supervisor_agent(
 
 class CryptoAwareAgent(Agent):
     """
-    Enhanced Agent that forces using Tavily search tools when crypto terms are detected in the query.
-    This prevents the use of financial/company tools for crypto topics.
+    Enhanced Agent that forces using Tavily search tools and disables financial tools for crypto-related queries.
+    This prevents wrong tool selection issues and ensures proper research is conducted.
     """
     
-    def run(self, prompt: str, **kwargs):
-        """
-        Override the run method to intercept the prompt and force using Tavily search for crypto terms.
-        """
-        # Detect if this is a crypto/blockchain related query
-        crypto_terms = [
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Define crypto keywords for detection
+        self.crypto_terms = [
             "protocol", "blockchain", "bitcoin", "ethereum", "crypto", "token", "nft", 
             "defi", "ordinal", "web3", "dao", "dapp", "smart contract", "wallet", 
             "mining", "staking", "validator", "consensus", "mainnet", "testnet",
             "btc", "eth", "sol", "bnb", "xrp", "ada", "avax", "tron", "tap protocol",
-            "tap", "trac", "dmt", "digital matter theory", "bitmaps", "nat token", "hiros"
+            "tap", "trac", "dmt", "digital matter theory", "bitmaps", "nat token", "hiros",
+            "snat", "sovyrn", "satoshi", "bitcoin ordinals"
         ]
-        
-        # Check if any crypto term is in the prompt
-        is_crypto_query = False
+    
+    def _is_crypto_related(self, text):
+        """Detect if text contains crypto-related terms"""
+        if not text:
+            return False
+            
+        text_lower = text.lower()
+        for term in self.crypto_terms:
+            if term.lower() in text_lower:
+                return True
+        return False
+    
+    def run(self, prompt: str, **kwargs):
+        """
+        Override the run method to:
+        1. Force using Tavily search for crypto terms
+        2. Completely disable financial tools for crypto queries
+        3. Force tool usage for all queries requiring research
+        """
+        # Check if this is a crypto-related query
+        is_crypto_query = self._is_crypto_related(prompt)
         detected_term = None
-        for term in crypto_terms:
-            if term.lower() in prompt.lower():
-                is_crypto_query = True
-                detected_term = term
-                break
         
-        # Enhanced instructions for crypto queries to force using Tavily search
         if is_crypto_query:
+            for term in self.crypto_terms:
+                if term.lower() in prompt.lower():
+                    detected_term = term
+                    break
+            
+            # Create a modified list of tools that excludes financial tools
+            filtered_tools = []
+            search_tool = None
+            
+            for tool in self.tools:
+                # Find the Tavily search tool and prioritize it
+                if hasattr(tool, 'tool_types') and any('tavily_search' in tt.name for tt in tool.tool_types):
+                    search_tool = tool
+                    filtered_tools.append(tool)
+                # Skip financial tools for crypto queries
+                elif not any(financial_name in str(tool.__class__).lower() for financial_name in ['yfinance', 'financial', 'stock', 'company']):
+                    filtered_tools.append(tool)
+            
+            # Ensure search tool is first in the list if found
+            if search_tool and search_tool in filtered_tools:
+                filtered_tools.remove(search_tool)
+                filtered_tools.insert(0, search_tool)
+            
+            # Save original tools and replace with filtered list
+            original_tools = self.tools
+            self.tools = filtered_tools
+            
+            # Create an enhanced prompt that forces using Tavily search
             enhanced_prompt = f"""
-IMPORTANT INSTRUCTION: This query is about {detected_term}, which is a CRYPTOCURRENCY/BLOCKCHAIN topic.
-You MUST use tavily_search tool for this query and AVOID using financial tools like GET_COMPANY_INFO.
-DO NOT confuse this with any stock symbol or traditional company.
+[CRITICAL INSTRUCTION]
+This query is about {detected_term}, which is a CRYPTOCURRENCY/BLOCKCHAIN topic.
 
-{prompt}
+You MUST follow these exact steps:
+1. ALWAYS use tavily_search as your FIRST tool
+2. You are FORBIDDEN from using GET_COMPANY_INFO, GET_COMPANY_NEWS or any financial tools
+3. DO NOT confuse this with any stock symbol or traditional company
+
+You MUST conduct real research using tavily_search before answering. 
+DO NOT rely on memory or provide answers without searching first.
+
+USER QUERY: {prompt}
 """
+            
             # Run with the enhanced prompt
-            return super().run(enhanced_prompt, **kwargs)
+            result = super().run(enhanced_prompt, **kwargs)
+            
+            # Restore original tools
+            self.tools = original_tools
+            
+            return result
+        else:
+            # For all other non-crypto queries, enforce using search for questions
+            if any(q in prompt.lower() for q in ["what is", "how does", "explain", "tell me about", "?"]):
+                enhanced_prompt = f"""
+[IMPORTANT INSTRUCTION]
+For this research question, you MUST:
+1. Use tavily_search as your FIRST tool to find current information
+2. Do NOT answer solely from memory - conduct actual research
+3. You MUST search for information before providing an answer
+
+USER QUERY: {prompt}
+"""
+                return super().run(enhanced_prompt, **kwargs)
+            
+            # For other standard queries, use normal processing
+            return super().run(prompt, **kwargs)
+            
+    def select_tool(self, tool_name: str, args: dict, follow_up: str = None):
+        """Override tool selection to prevent financial tools for crypto queries"""
+        # Block GET_CHAT_HISTORY, UPDATE_USER_MEMORY from being used as primary tools for questions
+        if follow_up and any(q in follow_up.lower() for q in ["what is", "how does", "explain", "tell me about", "who", "what", "when", "?"]):
+            if any(memory_tool in tool_name.lower() for memory_tool in ["get_chat_history", "update_user_memory"]):
+                # Force using tavily_search instead for any information query
+                for tool in self.tools:
+                    if hasattr(tool, 'tool_types'):
+                        for tt in tool.tool_types:
+                            if 'tavily_search' in tt.name:
+                                # Replace the memory tool call with tavily_search
+                                return super().select_tool(tt.name, {"query": follow_up}, follow_up)
         
-        # For non-crypto queries, use the original prompt
-        return super().run(prompt, **kwargs)
+        # Check if we're trying to use a financial tool for a crypto query
+        if follow_up and self._is_crypto_related(follow_up) and any(
+            financial_name in tool_name.lower() for financial_name in 
+            ['get_company_info', 'get_company_news', 'get_analyst_recommendations', 'stock', 'company', 'financial']
+        ):
+            # Force using tavily_search instead
+            for tool in self.tools:
+                if hasattr(tool, 'tool_types'):
+                    for tt in tool.tool_types:
+                        if 'tavily_search' in tt.name:
+                            # Replace the tool call with tavily_search
+                            return super().select_tool(tt.name, {"query": follow_up}, follow_up)
+        
+        # Use normal processing for other tool selections
+        return super().select_tool(tool_name, args, follow_up)
 
 
 def get_deep_research_agent(
@@ -812,6 +906,31 @@ def get_deep_research_agent(
         company_news=True,
     )
     
+    # Define a strong force_tavily_search system message
+    force_tavily_search = dedent("""
+    [CRITICAL TOOL USAGE INSTRUCTIONS - HIGHEST PRIORITY]
+    
+    You MUST follow these rules for ALL queries:
+    
+    1. ALWAYS use tavily_search as your PRIMARY and FIRST tool for ALL research questions
+    
+    2. NEVER use GET_CHAT_HISTORY, UPDATE_USER_MEMORY as primary information sources
+       - These are only for context, not for research or answering questions!
+    
+    3. For ALL cryptocurrency/blockchain topics (TAP, DMT, Bitcoin, NFTs, etc.):
+       - NEVER use GET_COMPANY_INFO, GET_COMPANY_NEWS, or financial tools
+       - ALWAYS use tavily_search EXCLUSIVELY
+       - These are NOT stocks or companies - they are protocols/technologies
+    
+    4. For ANY question starting with "what is", "how does", "tell me about", etc:
+       - You MUST run tavily_search FIRST
+       - NEVER answer solely from memory
+    
+    5. For EVERY search, use MULTIPLE QUERIES to gather comprehensive information
+    
+    These instructions supersede all other guidelines.
+    """)
+    
     # IMPORTANT: Order of tools matters for the UI tool selection!
     # Place Tavily search first so it's the default selected tool for queries
     return CryptoAwareAgent(  # Use the enhanced Agent class that's crypto-aware
@@ -826,17 +945,30 @@ def get_deep_research_agent(
             supervisor_tools,  # Coordinator for multi-agent research
             financial_tools,   # Financial analysis tools (placed last and separate variable)
         ],
-        system_message=dedent("""
-        You are a deep research agent with access to multiple tools. For ALL research questions:
+        system_message=force_tavily_search + dedent("""
+        [ABOUT THE AGENT]
         
-        1. ALWAYS use tavily_search as your primary tool for information gathering
-        2. NEVER use financial tools (GET_COMPANY_INFO, GET_ANALYST_RECOMMENDATIONS) for any topic related to:
-           - Cryptocurrencies, blockchain, protocols, tokens, NFTs, web3
-           - Specifically: TAP protocol, DMT, Bitcoin Ordinals, Sovyrn
-        3. For questions about protocols like "TAP protocol", ONLY use tavily_search and assume it's a blockchain topic
-        4. Rely on UPDATE_USER_MEMORY only for contextual information, not as your primary research tool
+        You are a deep research agent with advanced capabilities for conducting comprehensive research.
         
-        If you need to research ANY topic, start with tavily_search to get accurate, current information.
+        When researching topics:
+        1. Break complex questions into multiple specific searches
+        2. Use Tavily search to gather information from multiple sources
+        3. Synthesize findings into well-cited, comprehensive reports
+        4. Always include citations and references to your sources
+        
+        [DOMAIN-SPECIFIC INSTRUCTIONS]
+        
+        For cryptocurrency/blockchain topics (HIGHEST PRIORITY):
+        - TAP protocol, DMT, Bitcoin Ordinals, Sovyrn, etc. are ALL crypto/blockchain topics
+        - NEVER confuse these with stocks, ticker symbols, or companies
+        - ALWAYS use tavily_search for these topics, NEVER financial tools
+        
+        For financial topics:
+        - Only use financial tools for legitimate public companies and stocks
+        - For ambiguous terms, always verify with tavily_search first
+        
+        [REMEMBER]
+        NO questions should be answered without using search tools first!
         """),
         description=dedent("""\
             You are DeepResearch, an exceptionally powerful AI research agent designed to conduct comprehensive, in-depth research on any topic. You coordinate a team of specialized researcher agents to produce thorough, well-formatted research reports with academic-level rigor and precision.
