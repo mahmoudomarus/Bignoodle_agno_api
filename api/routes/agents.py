@@ -11,7 +11,7 @@ from agents.agno_assist import get_agno_assist_knowledge
 from agents.selector import AgentType, get_agent, get_available_agents
 from agents.deep_research_agent import (
     DeepResearchAgent, 
-    create_deep_research_agent,
+    get_deep_research_agent,
     create_supervisor_agent,
     create_researcher_agent
 )
@@ -175,7 +175,7 @@ async def execute_deep_research(request: ResearchRequest):
     """
     try:
         # Initialize the Deep Research Agent
-        agent = create_deep_research_agent()
+        agent = get_deep_research_agent()
         
         # Execute the research and get results
         results = agent.execute_research(request.query)
