@@ -29,6 +29,19 @@ class TokenUsageTracker:
         
     def add_usage(self, prompt_tokens: int, completion_tokens: int):
         """Add token usage from a single operation"""
+        # Convert to int if strings are provided
+        if isinstance(prompt_tokens, str):
+            try:
+                prompt_tokens = len(prompt_tokens)
+            except:
+                prompt_tokens = 0
+                
+        if isinstance(completion_tokens, str):
+            try:
+                completion_tokens = len(completion_tokens)
+            except:
+                completion_tokens = 0
+                
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens = self.prompt_tokens + self.completion_tokens
@@ -1219,9 +1232,10 @@ The final output should be publication-ready with clear structure and profession
             
             # Add token usage for this agent if applicable (the final polish)
             if hasattr(self, "token_usage"):
-                self.token_usage.add_usage("deep_research_polish", 
-                                           {"prompt_tokens": len(polish_prompt), 
-                                            "completion_tokens": len(polish_response.content)})
+                self.token_usage.add_usage(
+                    prompt_tokens=len(polish_prompt) if isinstance(polish_prompt, str) else 0,
+                    completion_tokens=len(polish_response.content) if hasattr(polish_response, "content") else 0
+                )
             
             # Calculate time taken
             time_taken = time.time() - start_time
