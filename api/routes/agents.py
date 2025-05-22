@@ -12,7 +12,6 @@ from agents.selector import AgentType, get_agent, get_available_agents
 from agents.deep_research_agent import (
     DeepResearchAgent, 
     get_deep_research_agent,
-    create_supervisor_agent,
     create_researcher_agent
 )
 from api.models import ResearchRequest, PlaygroundStatus
