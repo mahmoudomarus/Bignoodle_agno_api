@@ -212,7 +212,7 @@ class SupervisorToolKit(Tool):
     A toolkit that allows the supervisor agent to spawn and coordinate researcher agents.
     """
 
-    def __init__(self, create_researcher_fn: callable, model_id: str = "chatgpt-4o-latest", user_id: Optional[str] = None):
+    def __init__(self, create_researcher_fn: callable, model_id: str = "gpt-4o", user_id: Optional[str] = None):
         self.create_researcher_fn = create_researcher_fn
         self.model_id = model_id
         self.user_id = user_id
@@ -490,7 +490,7 @@ class SupervisorToolKit(Tool):
 
 
 def create_researcher_agent(
-    model_id: str = "chatgpt-4o-latest", 
+    model_id: str = "gpt-4o", 
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     research_question: str = "",
@@ -623,7 +623,7 @@ def create_researcher_agent(
 
 
 def create_supervisor_agent(
-    model_id: str = "chatgpt-4o-latest",
+    model_id: str = "gpt-4o",
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> Agent:
@@ -723,7 +723,7 @@ def create_supervisor_agent(
 
 
 def get_deep_research_agent(
-    model_id: str = "chatgpt-4o-latest",
+    model_id: str = "gpt-4o",
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     debug_mode: bool = True,
@@ -957,7 +957,7 @@ class DeepResearchAgent:
         tools: List[Tool] = None,
         researcher_agent_factory=None,
         max_iterations: int = 5,
-        model: str = "chatgpt-4o-latest",
+        model: str = "gpt-4o",
         logger=None,
     ):
         self.supervisor_agent = supervisor_agent
