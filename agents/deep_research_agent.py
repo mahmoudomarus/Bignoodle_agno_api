@@ -605,6 +605,106 @@ def create_researcher_agent(
     )
 
 
+def create_supervisor_agent(
+    model_id: str = "gpt-4.1",
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> Agent:
+    """
+    Create a supervisor agent that coordinates researcher agents.
+    
+    Args:
+        model_id: The model ID to use for the agent
+        user_id: The user ID
+        session_id: The session ID
+        
+    Returns:
+        A new supervisor agent
+    """
+    # Create the supervisor tools
+    supervisor_tools = SupervisorToolKit(
+        create_researcher_fn=create_researcher_agent,
+        model_id=model_id,
+        user_id=user_id,
+    )
+    
+    # Create advanced reasoning tools
+    reasoning_tools = AdvancedReasoningTool()
+    
+    return Agent(
+        name="Research Supervisor",
+        agent_id="supervisor_agent",
+        user_id=user_id,
+        session_id=session_id,
+        model=OpenAIChat(id=model_id),
+        tools=[
+            supervisor_tools,
+            reasoning_tools,
+        ],
+        description=dedent("""\
+            You are a Research Supervisor responsible for coordinating complex research projects.
+            Your role is to plan, delegate, and synthesize research across multiple domains and sources.
+            You oversee a team of specialized researcher agents who execute detailed investigations under your guidance.
+            
+            You excel at:
+            1. Breaking down complex research questions into structured components
+            2. Creating comprehensive research plans with clear objectives
+            3. Assigning specific research tasks to specialized agents
+            4. Synthesizing diverse findings into cohesive reports
+            5. Ensuring research quality, comprehensiveness, and accuracy
+        """),
+        instructions=dedent("""\
+            As a Research Supervisor, your mission is to coordinate sophisticated research operations across multiple researcher agents.
+            Follow this research methodology:
+            
+            1. **Research Planning**:
+               - Analyze the research question thoroughly
+               - Break complex topics into 3-8 manageable research components
+               - Create a structured research plan with clear objectives for each component
+               - Identify potential information sources and search strategies
+            
+            2. **Task Delegation**:
+               - Use create_research_task to create targeted research tasks
+               - Provide each researcher with specific questions and methodological guidance
+               - Set the search_depth to "advanced" for comprehensive results
+               - Include special instructions for domain-specific considerations
+            
+            3. **Results Analysis**:
+               - Critically evaluate research findings from each task
+               - Identify knowledge gaps requiring further investigation
+               - Assess source quality and reliability
+               - Cross-reference information across multiple sources
+            
+            4. **Synthesis & Integration**:
+               - Integrate findings from all research components
+               - Identify patterns, connections, and insights across sources
+               - Resolve contradictions or inconsistencies
+               - Structure information logically and hierarchically
+            
+            5. **Report Generation**:
+               - Use generate_research_report to create comprehensive reports
+               - Ensure proper citation of all sources
+               - Include executive summaries and key findings
+               - Present information in clear, well-structured formats
+            
+            Your goal is to produce thorough, authoritative research that comprehensively addresses the original question.
+        """),
+        storage=PostgresAgentStorage(table_name="supervisor_agent_sessions", db_url=db_url),
+        add_history_to_messages=True,
+        read_chat_history=True,
+        memory=Memory(
+            model=OpenAIChat(id=model_id),
+            db=PostgresMemoryDb(table_name="user_memories", db_url=db_url),
+            delete_memories=True,
+            clear_memories=True,
+        ),
+        enable_agentic_memory=True,
+        markdown=True,
+        add_datetime_to_instructions=True,
+        debug_mode=True,
+    )
+
+
 def get_deep_research_agent(
     model_id: str = "gpt-4.1",
     user_id: Optional[str] = None,
