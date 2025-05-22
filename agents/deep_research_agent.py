@@ -22,8 +22,8 @@ from db.session import db_url
 from agents.progress_tracker import progress_tracker, ResearchStage
 
 # Constants
-DEFAULT_MODEL_ID = "gpt-4o-mini"  # Use this constant for consistent model naming
-DEFAULT_TOOL_MODEL = "gpt-4o-mini"  # Model used for tools functionality
+DEFAULT_MODEL_ID = "o4-mini"  # Use this constant for consistent model naming
+DEFAULT_TOOL_MODEL = "o4-mini"  # Model used for tools functionality
 
 # Token usage tracker class for monitoring token consumption
 class TokenUsageTracker:
@@ -33,27 +33,35 @@ class TokenUsageTracker:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
+        self._encoding = None  # Cache the encoding object
+        
+    def _get_encoding(self):
+        """Get or create a cached tiktoken encoding object"""
+        if self._encoding is None:
+            try:
+                import tiktoken
+                self._encoding = tiktoken.encoding_for_model("gpt-4o")
+            except (ImportError, Exception):
+                # If tiktoken is not available or any other error
+                return None
+        return self._encoding
         
     def add_usage(self, prompt_tokens: int, completion_tokens: int):
         """Add token usage from a single operation"""
         # Convert to int if strings are provided
         if isinstance(prompt_tokens, str):
-            try:
-                # Use tiktoken for accurate token counting
-                import tiktoken
-                encoding = tiktoken.encoding_for_model("gpt-4o")
+            encoding = self._get_encoding()
+            if encoding:
                 prompt_tokens = len(encoding.encode(prompt_tokens))
-            except ImportError:
+            else:
                 # Fallback if tiktoken not available
                 prompt_tokens = len(prompt_tokens) // 4  # Rough estimate
                 
         if isinstance(completion_tokens, str):
-            try:
-                # Use tiktoken for accurate token counting
-                import tiktoken
-                encoding = tiktoken.encoding_for_model("gpt-4o")
+            encoding = self._get_encoding()
+            if encoding:
                 completion_tokens = len(encoding.encode(completion_tokens))
-            except ImportError:
+            else:
                 # Fallback if tiktoken not available
                 completion_tokens = len(completion_tokens) // 4  # Rough estimate
                 
@@ -378,7 +386,7 @@ class SupervisorToolKit(Tool):
     A toolkit that allows the supervisor agent to spawn and coordinate researcher agents.
     """
 
-    def __init__(self, create_researcher_fn: callable, model_id: str = "gpt-4o", user_id: Optional[str] = None):
+    def __init__(self, create_researcher_fn: callable, model_id: str = DEFAULT_MODEL_ID, user_id: Optional[str] = None):
         self.create_researcher_fn = create_researcher_fn
         self.model_id = model_id
         self.user_id = user_id
@@ -656,7 +664,7 @@ class SupervisorToolKit(Tool):
 
 
 def create_researcher_agent(
-    model_id: str = "gpt-4o", 
+    model_id: str = DEFAULT_MODEL_ID, 
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     research_question: str = "",
@@ -784,12 +792,12 @@ def create_researcher_agent(
         enable_agentic_memory=True,
         markdown=True,
         add_datetime_to_instructions=True,
-        debug_mode=True,
+        debug_mode=False,  # Changed to False for production
     )
 
 
 def create_supervisor_agent(
-    model_id: str = "gpt-4o",
+    model_id: str = DEFAULT_MODEL_ID,  # Changed from gpt-4o to DEFAULT_MODEL_ID
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> Agent:
@@ -884,7 +892,7 @@ def create_supervisor_agent(
         enable_agentic_memory=True,
         markdown=True,
         add_datetime_to_instructions=True,
-        debug_mode=True,
+        debug_mode=False,  # Changed to False for production
     )
 
 
@@ -968,7 +976,7 @@ class CryptoAwareAgent(Agent):
 You are responding to an information request: "{prompt}"
 
 Before answering, you MUST:
-1. Use tavily_search as your FIRST tool to gather current, accurate information
+1. Use {tavily_search_name} as your FIRST tool to gather current, accurate information
 2. NEVER answer solely from memory without verifying with search
 3. Use multiple search queries to explore different aspects of the topic
 4. Cite your sources with proper links
@@ -984,7 +992,7 @@ For ANY information question, search is MANDATORY - not optional.
 CRYPTO DOMAIN DETECTED: This query includes "{term}" which is a CRYPTOCURRENCY/BLOCKCHAIN topic.
 
 For cryptocurrency topics, you MUST additionally:
-1. ONLY use tavily_search for research - NEVER use financial tools
+1. ONLY use {tavily_search_name} for research - NEVER use financial tools
 2. DO NOT treat crypto tokens/protocols as companies or stocks
 3. Look for the latest information as the crypto space changes rapidly
 4. Pay special attention to tokenomics, technology, and recent developments
@@ -1146,18 +1154,18 @@ def get_deep_research_agent(
     
     You MUST follow these rules for ALL queries:
     
-    1. ALWAYS use tavily_search as your PRIMARY and FIRST tool for ALL research questions
+    1. ALWAYS use your web search tool as your PRIMARY and FIRST tool for ALL research questions
     
     2. NEVER use GET_CHAT_HISTORY, UPDATE_USER_MEMORY as primary information sources
        - These are only for context, not for research or answering questions!
     
     3. For ALL cryptocurrency/blockchain topics (TAP, DMT, Bitcoin, NFTs, etc.):
        - NEVER use GET_COMPANY_INFO, GET_COMPANY_NEWS, or financial tools
-       - ALWAYS use tavily_search EXCLUSIVELY
+       - ALWAYS use your web search tool EXCLUSIVELY
        - These are NOT stocks or companies - they are protocols/technologies
     
     4. For ANY question starting with "what is", "how does", "tell me about", etc:
-       - You MUST run tavily_search FIRST
+       - You MUST run your web search tool FIRST
        - NEVER answer solely from memory
     
     5. For EVERY search, use MULTIPLE QUERIES to gather comprehensive information
@@ -1357,10 +1365,10 @@ class DeepResearchAgent:
         from api.settings import settings
         self.client = openai.OpenAI(api_key=settings.openai_api_key)
         
-    async def execute_research(self, research_question: str, research_topic=None, previous_findings=None, next_steps=None, conversation_time=None, session_id=None, **kwargs):
+    def execute_research(self, research_question: str, research_topic=None, previous_findings=None, next_steps=None, conversation_time=None, session_id=None, **kwargs):
         """Execute a research task with multi-agent reasoning and search"""
-        debug_mode = kwargs.get('debug_mode', True)  # Enable debug mode by default
-        delete_memories = kwargs.get('delete_memories', True)
+        debug_mode = kwargs.get('debug_mode', False)  # Set to False for production
+        delete_memories = kwargs.get('delete_memories', False)  # Changed to False to accumulate context
         is_crypto = False
         domain = "general"
         
@@ -1370,19 +1378,25 @@ class DeepResearchAgent:
             
             if session_id is None:
                 # Create a session if one doesn't exist
-                session_result = progress_tracker.create_session(research_question)
+                session_result = progress_tracker.create_session()
                 if isinstance(session_result, dict) and 'session_id' in session_result:
                     session_id = session_result['session_id']
                 else:
-                    logger.error(f"Failed to create progress tracking session: {session_result}")
+                    # Handle string return type
+                    session_id = session_result
+                
+                # Initialize the session with the question
+                progress_tracker.initialize_session(session_id, research_question)
+            
         except Exception as e:
-            logger.error(f"Error initializing progress tracker: {str(e)}")
+            logging.error(f"Error initializing progress tracker: {str(e)}")
 
         # Start with a planning phase to determine domain 
+        # Fixed: Use DEFAULT_MODEL_ID instead of undefined constants
         planning_agent = CryptoAwareAgent(
             name="Research Planner",
-            system_prompt=SYSTEM_PROMPT,
-            model=O4_MINI_MODEL,
+            agent_id="research_planning_agent",
+            model=OpenAIChat(id=DEFAULT_MODEL_ID),
             debug_mode=debug_mode
         )
         
@@ -1412,7 +1426,8 @@ class DeepResearchAgent:
         """
         
         try:
-            planning_result = await planning_agent.async_run(planning_prompt)
+            # Fixed: Use run() instead of async_run()
+            planning_result = planning_agent.run(planning_prompt)
             
             # Try to parse the domain from the result
             if "DOMAIN:" in planning_result:
@@ -1424,7 +1439,8 @@ class DeepResearchAgent:
                     "crypto", "bitcoin", "ethereum", "blockchain", "nft", "token", 
                     "web3", "defi", "dao", "smart contract", "mining", "wallet", 
                     "exchange", "swap", "dex", "ordinals", "coin", "btc", "eth", 
-                    "sol", "solana", "trading", "yield", "memecoin", "gas", "gas fee"
+                    "sol", "solana", "trading", "yield", "memecoin", "gas", "gas fee",
+                    "tap protocol", "dmf", "nat token", "snat"
                 ]
                 
                 if any(term in domain or term in research_question.lower() for term in crypto_terms):
@@ -1432,7 +1448,7 @@ class DeepResearchAgent:
                     domain = "cryptocurrency"
                 
                 # Special case for ticker-like patterns (e.g., BTC, ETH, SOL)
-                crypto_tickers = ["BTC", "ETH", "SOL", "XRP", "ADA", "DOT", "AVAX"]
+                crypto_tickers = ["BTC", "ETH", "SOL", "XRP", "ADA", "DOT", "AVAX", "TAP", "NAT"]
                 for ticker in crypto_tickers:
                     if ticker in research_question or f"{ticker}-USD" in research_question:
                         is_crypto = True
@@ -1440,11 +1456,11 @@ class DeepResearchAgent:
                         break
             
             # Log the generated plan
-            logger.info(f"Research plan generated. Domain: {domain}, Is crypto: {is_crypto}")
-            logger.debug(f"Full research plan: {planning_result}")
+            logging.info(f"Research plan generated. Domain: {domain}, Is crypto: {is_crypto}")
+            logging.debug(f"Full research plan: {planning_result}")
             
         except Exception as e:
-            logger.error(f"Error during planning phase: {str(e)}")
+            logging.error(f"Error during planning phase: {str(e)}")
             # Default to general domain if planning fails
             domain = "general"
             is_crypto = False
@@ -1452,7 +1468,8 @@ class DeepResearchAgent:
         # Store the domain in our progress tracker
         if session_id:
             try:
-                progress_tracker.update_meta(
+                # Fixed: Use store_session_data instead of update_meta
+                progress_tracker.store_session_data(
                     session_id, 
                     {
                         "domain": domain,
@@ -1460,7 +1477,7 @@ class DeepResearchAgent:
                     }
                 )
             except Exception as e:
-                logger.error(f"Error updating progress tracker metadata: {str(e)}")
+                logging.error(f"Error updating progress tracker metadata: {str(e)}")
         
         # Store domain in agent state for tool selection
         self.state = {
@@ -1472,10 +1489,11 @@ class DeepResearchAgent:
         # Update progress tracker with planning stage completion
         if session_id:
             try:
-                progress_tracker.update_stage(session_id, ResearchStage.PLANNING, 100)
-                progress_tracker.update_stage(session_id, ResearchStage.RESEARCH, 0)
+                progress_tracker.update_stage(session_id, ResearchStage.PLANNING)
+                # Fixed: update_stage takes session_id and stage, not percentage
+                # progress_tracker.update_stage(session_id, ResearchStage.RESEARCH, 0)
             except Exception as e:
-                logger.error(f"Error updating progress tracker stages: {str(e)}")
+                logging.error(f"Error updating progress tracker stages: {str(e)}")
         
         # Continue with existing research execution...
         
