@@ -977,7 +977,7 @@ class DeepResearchAgent:
         
         # OpenAI client
         import openai
-        from api.config import settings
+        from api.settings import settings
         self.client = openai.OpenAI(api_key=settings.openai_api_key)
         
     async def execute_research(self, question: str, session_id: Optional[str] = None, timeout_seconds: int = 600) -> Dict[str, Any]:
