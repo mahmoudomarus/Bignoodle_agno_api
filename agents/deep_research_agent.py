@@ -767,7 +767,7 @@ DO NOT confuse this with any stock symbol or traditional company.
 
 
 def get_deep_research_agent(
-    model_id: str = "gpt-4o-mini",  # Changed from gpt-4o to gpt-4o-mini
+    model_id: str = "o4-mini",  # Corrected from gpt-4o-mini to o4-mini
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     debug_mode: bool = True,
