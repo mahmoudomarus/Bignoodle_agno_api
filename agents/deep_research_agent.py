@@ -986,7 +986,7 @@ class DeepResearchAgent:
         
     async def execute_research(self, question: str, session_id: Optional[str] = None, timeout_seconds: int = 600) -> Dict[str, Any]:
         """
-        Execute research on the given question using a simplified approach.
+        Execute research on the given question using Tavily search to gather real information.
         
         Args:
             question: The research question to answer
@@ -1010,33 +1010,116 @@ class DeepResearchAgent:
         try:
             self.logger.info(f"Starting research for question: {question}")
             
-            # Update to research stage before making the call
-            self.progress_tracker.update_stage(session_id, ResearchStage.RESEARCH)
+            # Initialize Tavily search tool
+            from agents.tavily_tools import TavilyTools
+            from api.settings import settings
             
-            # Create a comprehensive research prompt
-            research_prompt = f"""
-            You are a world-class research agent. Your task is to thoroughly investigate the following question:
+            tavily_tools = TavilyTools(
+                api_key=settings.tavily_api_key,
+                search_depth="advanced",
+                max_results=15,
+                include_answer=True,
+                include_raw_content=True,
+                include_domains=None,
+                exclude_domains=None,
+            )
+            
+            # Step 1: Break down the research question into search queries
+            self.logger.info("Breaking down research question into search queries")
+            decomposition_prompt = f"""
+            I need to research the following question thoroughly:
             
             QUESTION: {question}
             
-            Conduct comprehensive research on this topic and provide a detailed, well-structured report.
+            Please break this down into 3-5 specific search queries that will help gather comprehensive information.
+            For each query, explain why it's important and what aspect of the question it addresses.
+            Format your response as a JSON array of objects with 'query' and 'reason' fields.
+            """
             
-            Your report should include:
+            decomposition_response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a research planning assistant."},
+                    {"role": "user", "content": decomposition_prompt}
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+                max_tokens=1000
+            )
+            
+            # Extract and parse search queries
+            try:
+                search_queries = json.loads(decomposition_response.choices[0].message.content)
+                search_queries = search_queries.get("search_queries", [])
+                if not isinstance(search_queries, list):
+                    search_queries = [{"query": question, "reason": "Main research question"}]
+            except Exception as e:
+                self.logger.error(f"Error parsing search queries: {str(e)}")
+                search_queries = [{"query": question, "reason": "Main research question"}]
+            
+            self.logger.info(f"Generated {len(search_queries)} search queries")
+            
+            # Update progress to research stage
+            self.progress_tracker.update_stage(session_id, ResearchStage.RESEARCH)
+            
+            # Step 2: Execute searches for each query
+            all_search_results = []
+            
+            for i, query_obj in enumerate(search_queries[:5]):  # Limit to 5 queries max
+                query = query_obj.get("query", question)
+                self.logger.info(f"Executing search {i+1}/{len(search_queries)}: {query}")
+                
+                try:
+                    search_result = tavily_tools.search(query)
+                    if isinstance(search_result, dict) and "results" in search_result:
+                        all_search_results.append({
+                            "query": query,
+                            "results": search_result.get("results", [])
+                        })
+                    else:
+                        self.logger.warning(f"Unexpected search result format: {search_result}")
+                except Exception as e:
+                    self.logger.error(f"Search error for query '{query}': {str(e)}")
+                    
+                # Brief pause between searches to avoid rate limits
+                time.sleep(1)
+            
+            # Organize and format the search results
+            organized_results = ""
+            for search in all_search_results:
+                organized_results += f"\n\nSEARCH QUERY: {search['query']}\n"
+                for i, result in enumerate(search['results'][:5]):  # Limit to top 5 results per query
+                    organized_results += f"\nResult {i+1}:\n"
+                    organized_results += f"Title: {result.get('title', 'N/A')}\n"
+                    organized_results += f"URL: {result.get('url', 'N/A')}\n"
+                    organized_results += f"Content: {result.get('content', 'No content')[:500]}...\n"  # Truncate long content
+            
+            # Step 3: Generate a research report based on the search results
+            self.logger.info("Generating research report from search results")
+            research_prompt = f"""
+            You are a world-class research agent. Your task is to create a comprehensive research report on the following question:
+            
+            QUESTION: {question}
+            
+            Below are search results from reputable sources that you should use to inform your report:
+            
+            {organized_results}
+            
+            Based on these search results, create a detailed, well-structured research report. Your report should:
             
             1. EXECUTIVE SUMMARY: A brief overview of your findings
             2. BACKGROUND: Relevant context and information about the topic
             3. MAIN FINDINGS: Detailed information addressing the question
             4. ANALYSIS: Your expert analysis of the information
             5. CONCLUSIONS: Clear conclusions based on your research
-            6. REFERENCES: Sources of information (if applicable)
+            6. REFERENCES: Cite the sources used (include URLs)
             
             Be thorough, accurate, and objective in your research. Provide specific details and examples where relevant.
+            Include direct quotes and citations from the sources when appropriate.
             
             IMPORTANT: You must deliver your research report immediately upon completion. Do NOT include any statements about waiting 24-48 hours or suggest that the research will be delivered at a future time. The research report should be considered final and complete when delivered.
             """
             
-            # Make a single call to OpenAI for the research
-            self.logger.info("Making research call to OpenAI")
             research_result = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
