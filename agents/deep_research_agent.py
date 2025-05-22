@@ -8,6 +8,8 @@ import random
 import tenacity
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
 import uuid
+import re
+from datetime import datetime
 
 from agno.agent import Agent
 from agno.memory.v2.db.postgres import PostgresMemoryDb
@@ -1004,10 +1006,10 @@ For cryptocurrency topics, you MUST additionally:
             modified_prompt += f"\nUSER QUERY: {prompt}\n"
             
             # Run with the heavily modified prompt that forces search
-            return super().run(modified_prompt, **kwargs)
+            return run_with_retry(self, modified_prompt, **kwargs)
         
         # For standard queries, still override but with less aggressive modification
-        return super().run(prompt, **kwargs)
+        return run_with_retry(self, prompt, **kwargs)
             
     def select_tool(self, tool_name: str, args: dict, follow_up: str = None):
         """Override tool selection to prevent financial tools for crypto queries"""
@@ -1437,7 +1439,7 @@ class DeepResearchAgent:
         
         try:
             # Run the planning agent
-            planning_result = planning_agent.run(planning_prompt)
+            planning_result = run_with_retry(planning_agent, planning_prompt)
             
             # Add planning as first task and mark complete
             planning_task_id = progress_tracker.add_task(
@@ -1544,7 +1546,7 @@ class DeepResearchAgent:
             Use your research_planning tool to create a detailed research plan.
             """
             
-            planning_response = self.supervisor_agent.run(planning_prompt)
+            planning_response = run_with_retry(self.supervisor_agent, planning_prompt)
             progress_tracker.complete_task(session_id, planning_task_id["task_id"], result=planning_response)
             
             # 3. COMPONENT RESEARCH WITH MULTIPLE RESEARCHER AGENTS
@@ -1597,7 +1599,7 @@ class DeepResearchAgent:
                 """
                 
                 # Execute the research for this component
-                component_result = self.supervisor_agent.run(task_prompt)
+                component_result = run_with_retry(self.supervisor_agent, task_prompt)
                 component_results.append({
                     "component": component['name'],
                     "result": component_result
@@ -1659,7 +1661,7 @@ class DeepResearchAgent:
             """
             
             # Generate the final report
-            final_report = self.supervisor_agent.run(report_prompt)
+            final_report = run_with_retry(self.supervisor_agent, report_prompt)
             
             # Extract the report text from the response
             report_text = ""
@@ -1736,11 +1738,19 @@ def run_with_retry(agent, prompt, max_attempts=5):
                 raise e
     
     try:
-        return _run_with_retry()
+        result = _run_with_retry()
+        
+        # Handle different return types
+        if hasattr(result, 'content'):
+            # If it's a RunResponse or similar object with content attribute
+            return result.content
+        else:
+            # If it's already a string or dict or other value
+            return result
     except tenacity.RetryError as e:
-        # If all retries failed, return a simple object with content attribute
+        # If all retries failed, return a simple error string
         logging.error(f"All retries failed: {str(e)}")
-        return type('obj', (object,), {'content': f"Error after {max_attempts} retries: {str(e.last_attempt.exception())}"})
+        return f"Error after {max_attempts} retries: {str(e.last_attempt.exception())}"
 
 # Define custom exceptions for retry logic
 class RateLimitError(Exception):
