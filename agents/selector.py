@@ -5,7 +5,7 @@ from agno.agent import Agent
 from agents.web_agent import get_web_agent
 from agents.agno_assist import get_agno_assist
 from agents.finance_agent import get_finance_agent
-from agents.deep_research_agent import get_deep_research_agent, create_deep_research_agent as create_deep_research_agent_fn
+from agents.deep_research_agent import get_deep_research_agent, DeepResearchAgent, create_researcher_agent
 
 
 class AgentType(str, Enum):
@@ -91,4 +91,13 @@ def get_deep_research_agent_instance() -> Any:
     Returns:
         A DeepResearchAgent instance
     """
-    return create_deep_research_agent_fn()
+    from agents.deep_research_agent import create_supervisor_agent
+    
+    # Create a supervisor agent
+    supervisor_agent = create_supervisor_agent()
+    
+    # Create the DeepResearchAgent with the supervisor
+    return DeepResearchAgent(
+        supervisor_agent=supervisor_agent,
+        researcher_agent_factory=create_researcher_agent
+    )
