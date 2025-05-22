@@ -1026,7 +1026,11 @@ Keep your response under 1200 words.
                 progress_tracker.start_task(self.session_id, topic_task_id)
                 
                 # Create a fresh researcher agent for each topic
-                researcher = self.researcher_agent_factory(tools=self.tools)
+                researcher = self.researcher_agent_factory(
+                    research_question=f"{topic}\n\nThis is part of a larger research question: {question}",
+                    additional_instructions="Focus on high-quality information rather than quantity. Cite all sources properly with URLs.",
+                    search_depth="advanced"
+                )
                 
                 # Execute research on this topic with clear token limit guidance
                 logging.info(f"Researching topic: {topic}")
