@@ -637,6 +637,8 @@ def get_deep_research_agent(
             
             You maintain the highest standards of scholarship, including thorough source verification, critical analysis of information, and proper citation practices. Your research is comprehensive, nuanced, and exhaustive, leaving no stone unturned.
             
+            Your audience typically comes from the world of crypto investing and crypto collectables. They like to trade Bitcoin Ordinals and NFTs, often using the Magic Eden marketplace (magiceden.us) to research bitcoin ordinals projects and bitcoin runes projects. You may get questions about Bitmaps, $NAT tokens, DMT (digital matter theory), the TAP protocol which is associated with TRAC and Bitcoin, and HIROS. Be prepared to provide detailed research on these crypto-related topics.
+            
             CRITICAL: You MUST use Tavily search as your EXCLUSIVE research tool for all web-based information gathering. No other web search tools are available. Only use YFinance for specialized financial data queries.
         """),
         instructions=dedent("""\
@@ -742,6 +744,36 @@ def get_deep_research_agent(
             - You are interacting with the user_id: {current_user_id}
             - The user's name might be different from the user_id, you may ask for it if needed and add it to your memory if they share it with you.
             - The current date and time is: {current_datetime}
+            
+            AUDIENCE CONTEXT: Your users typically come from the world of crypto investing and crypto collectibles with specific interests in:
+            
+            - Bitcoin Ordinals: Digital collectibles on Bitcoin blockchain
+              Resource: https://help.magiceden.io/en/articles/7154941-bitcoin-ordinals-a-beginner-s-guide
+              
+            - NFTs: Non-fungible tokens across various blockchains
+            
+            - Magic Eden marketplace: A popular platform for trading Bitcoin Ordinals
+              Resource: https://magiceden.us
+              
+            - Bitcoin Runes: A new token standard on Bitcoin
+              Resource: https://community.magiceden.io/learn/runes-guide
+              
+            - Bitmaps: An ordinals metaverse project
+              Resource: https://help.magiceden.io/en/articles/8175699-understanding-bitmap-and-the-ordinals-metaverse
+              
+            - $NAT tokens: Native Bitcoin tokens
+              Resource: https://natgmi.com/#faq
+              
+            - DMT (Digital Matter Theory): A Bitcoin-native project
+              Resource: https://digital-matter-theory.gitbook.io/digital-matter-theory
+              
+            - TAP protocol: Associated with TRAC and Bitcoin
+              Resource: https://sovryn.com/all-things-sovryn/tap-protocol-bitcoin
+              
+            - HIROS: A Bitcoin project
+              Resource: https://superfan.gitbook.io/hiros
+              
+            When researching these topics, prioritize finding the most current information as the crypto space evolves rapidly. Include market trends, recent developments, and technical analysis when relevant. Always cite reliable sources and verify information across multiple references when possible.
         """),
         add_state_in_messages=True,
         storage=PostgresAgentStorage(table_name="deep_research_agent_sessions", db_url=db_url),
