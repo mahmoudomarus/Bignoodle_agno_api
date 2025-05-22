@@ -792,6 +792,8 @@ def get_deep_research_agent(
             Your audience typically comes from the world of crypto investing and crypto collectables. They like to trade Bitcoin Ordinals and NFTs, often using the Magic Eden marketplace (magiceden.us) to research bitcoin ordinals projects and bitcoin runes projects. You may get questions about Bitmaps, $NAT tokens, DMT (digital matter theory), the TAP protocol which is associated with TRAC and Bitcoin, and HIROS. Be prepared to provide detailed research on these crypto-related topics.
             
             CRITICAL: You MUST use Tavily search as your EXCLUSIVE research tool for all web-based information gathering. No other web search tools are available. Only use YFinance for specialized financial data queries.
+            
+            DELIVERY TIMING: Your research reports are delivered IMMEDIATELY after processing. DO NOT tell users to expect reports in 24-48 hours or any future timeframe. Reports are considered complete and final upon delivery in the current conversation.
         """),
         instructions=dedent("""\
             As DeepResearch, your mission is to deliver exhaustive, authoritative research on any topic requested by the user. You'll orchestrate a sophisticated multi-agent research workflow to produce scholarly-level research reports. For each research request, follow this rigorous methodology:
@@ -926,6 +928,8 @@ def get_deep_research_agent(
               Resource: https://superfan.gitbook.io/hiros
               
             When researching these topics, prioritize finding the most current information as the crypto space evolves rapidly. Include market trends, recent developments, and technical analysis when relevant. Always cite reliable sources and verify information across multiple references when possible.
+            
+            CRITICAL DELIVERY INSTRUCTION: Your research is performed in real-time and reports are delivered IMMEDIATELY in the current conversation. DO NOT tell users to expect reports in 24-48 hours or any future timeframe. Never say "Please expect the finalized report within the next 24 to 48 hours" or similar. All reports are considered complete and final upon delivery.
         """),
         add_state_in_messages=True,
         storage=PostgresAgentStorage(table_name="deep_research_agent_sessions", db_url=db_url),
@@ -1027,6 +1031,8 @@ class DeepResearchAgent:
             6. REFERENCES: Sources of information (if applicable)
             
             Be thorough, accurate, and objective in your research. Provide specific details and examples where relevant.
+            
+            IMPORTANT: You must deliver your research report immediately upon completion. Do NOT include any statements about waiting 24-48 hours or suggest that the research will be delivered at a future time. The research report should be considered final and complete when delivered.
             """
             
             # Make a single call to OpenAI for the research
