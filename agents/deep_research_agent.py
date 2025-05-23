@@ -906,7 +906,7 @@ class CryptoAwareAgent(Agent):
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # Define crypto keywords for detection
+        # Define crypto keywords for detection - ENHANCED LIST
         self.crypto_terms = [
             "protocol", "blockchain", "bitcoin", "ethereum", "crypto", "token", "nft", 
             "defi", "ordinal", "web3", "dao", "dapp", "smart contract", "wallet", 
@@ -914,7 +914,12 @@ class CryptoAwareAgent(Agent):
             "btc", "eth", "sol", "bnb", "xrp", "ada", "avax", "tron", "tap protocol",
             "tap", "trac", "dmt", "digital matter theory", "bitmaps", "nat token", "hiros",
             "snat", "sovyrn", "satoshi", "bitcoin ordinals", "$nat", "runes",
-            "TAP Protocol"
+            "TAP Protocol", "TAP protocol", "tap protocol bitcoin", "ordinals bitcoin",
+            "bitcoin ecosystem", "bitcoin layers", "bitcoin runes", "bitcoin ordinal",
+            "bitcoin inscription", "bitcoin nft", "bitcoin token", "bitcoin defi",
+            "satoshi", "sats", "inscription", "ordinal", "ordinals", "rune", "brc-20",
+            "cryptocurrency", "digital asset", "blockchain technology", "decentralized",
+            "pow", "proof of work", "proof of stake", "pos", "consensus mechanism"
         ]
     
     def _is_crypto_related(self, text):
@@ -1581,7 +1586,13 @@ class DeepResearchAgent:
                     "web3", "defi", "dao", "smart contract", "mining", "wallet", 
                     "exchange", "swap", "dex", "ordinals", "coin", "btc", "eth", 
                     "sol", "solana", "trading", "yield", "memecoin", "gas", "gas fee",
-                    "tap protocol", "dmf", "nat token", "snat", "tap", "TAP", "TAP Protocol"
+                    "tap protocol", "dmf", "nat token", "snat", "tap", "TAP", "TAP Protocol",
+                    "protocol", "digital matter theory", "dmt", "bitcoin ordinals",
+                    "bitcoin runes", "runes", "ordinal", "inscription", "brc-20",
+                    "bitcoin ecosystem", "bitcoin layers", "bitcoin nft", "bitcoin token",
+                    "satoshi", "sats", "proof of work", "proof of stake", "pow", "pos",
+                    "consensus", "validator", "staking", "mining", "cryptocurrency",
+                    "digital asset", "blockchain technology", "decentralized"
                 ]
                 
                 if any(term in domain or term in research_question.lower() for term in crypto_terms):
@@ -1589,32 +1600,25 @@ class DeepResearchAgent:
                     domain = "cryptocurrency"
                 
                 # Special case for ticker-like patterns (e.g., BTC, ETH, SOL)
-                crypto_tickers = ["BTC", "ETH", "SOL", "XRP", "ADA", "DOT", "AVAX", "TAP", "NAT"]
+                crypto_tickers = ["BTC", "ETH", "SOL", "XRP", "ADA", "DOT", "AVAX", "TAP", "NAT", "TRAC", "DMT"]
                 for ticker in crypto_tickers:
                     if ticker in research_question or f"{ticker}-USD" in research_question:
                         is_crypto = True
                         domain = "cryptocurrency"
                         break
                 
-                # Force TAP Protocol to be crypto-related since it's a known crypto project
-                if "tap protocol" in research_question.lower() or "TAP Protocol" in research_question:
+                # Enhanced TAP Protocol detection
+                tap_indicators = ["tap protocol", "TAP Protocol", "TAP protocol", "tap bitcoin", "TAP bitcoin"]
+                if any(indicator in research_question.lower() for indicator in tap_indicators):
                     is_crypto = True
                     domain = "cryptocurrency"
-                    logging.info("Forced TAP Protocol to be classified as cryptocurrency")
+                    logging.info("Detected TAP Protocol - classifying as cryptocurrency")
                     
-                    # Update the progress tracker immediately with the correct classification
-                    if session_id:
-                        try:
-                            progress_tracker.update_meta(
-                                session_id, 
-                                {
-                                    "domain": "cryptocurrency",
-                                    "is_crypto": True
-                                }
-                            )
-                            logging.info("Updated progress tracker with forced crypto classification for TAP Protocol")
-                        except Exception as e:
-                            logging.error(f"Error updating progress tracker for TAP Protocol: {str(e)}")
+                # Force protocol-related queries in Bitcoin context to be crypto
+                if "protocol" in research_question.lower() and ("bitcoin" in research_question.lower() or "btc" in research_question.lower()):
+                    is_crypto = True
+                    domain = "cryptocurrency"
+                    logging.info("Detected Bitcoin protocol query - classifying as cryptocurrency")
             
             # Log the generated plan
             logging.info(f"Research plan generated. Domain: {domain}, Is crypto: {is_crypto}")
