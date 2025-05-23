@@ -15,7 +15,6 @@ import uuid
 class ResearchStage(Enum):
     """Enum for tracking the stage of research"""
     PLANNING = "planning"
-    RESEARCH = "research"
     DATA_COLLECTION = "data_collection"
     ANALYSIS = "analysis"
     REPORT_GENERATION = "report_generation"
@@ -43,22 +42,6 @@ class ProgressTracker:
             "history": []
         }
         return session_id
-    
-    def initialize_session(self, session_id: str, question: str) -> Dict[str, Any]:
-        """Initialize a session with the research question"""
-        if session_id not in self.sessions:
-            return {"error": f"Session {session_id} not found"}
-            
-        self.sessions[session_id]["question"] = question
-        self.sessions[session_id]["last_updated"] = time.time()
-        
-        # Add to history
-        self.sessions[session_id]["history"].append({
-            "timestamp": time.time(),
-            "event": f"Session initialized with question: {question[:50]}..." if len(question) > 50 else question
-        })
-        
-        return {"status": "success"}
     
     def update_stage(self, session_id: str, stage: ResearchStage) -> Dict[str, Any]:
         """Update the current stage of research"""
@@ -195,17 +178,13 @@ class ProgressTracker:
         # Time elapsed
         elapsed_time = time.time() - session["start_time"]
         
-        # Include metadata if it exists
-        metadata = session.get("meta", {})
-        
         return {
             "session_id": session_id,
             "stage": current_stage,
             "progress_percentage": progress_percentage,
             "active_tasks": active_task_details,
             "elapsed_time_seconds": elapsed_time,
-            "last_updated": session["last_updated"],
-            "meta": metadata  # Include metadata in the response
+            "last_updated": session["last_updated"]
         }
     
     def get_full_session_details(self, session_id: str) -> Dict[str, Any]:
@@ -245,28 +224,6 @@ class ProgressTracker:
             self.session_data[session_id] = {}
         
         self.session_data[session_id].update(data)
-        
-        return {"status": "success"}
-    
-    def update_meta(self, session_id: str, meta_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Store metadata for the session like domain information for tool selection"""
-        if session_id not in self.sessions:
-            return {"error": f"Session {session_id} not found"}
-        
-        # Initialize metadata dict if it doesn't exist
-        if "meta" not in self.sessions[session_id]:
-            self.sessions[session_id]["meta"] = {}
-        
-        # Update the metadata
-        self.sessions[session_id]["meta"].update(meta_data)
-        self.sessions[session_id]["last_updated"] = time.time()
-        
-        # Add to history
-        meta_summary = ", ".join([f"{k}: {v}" for k, v in meta_data.items()])
-        self.sessions[session_id]["history"].append({
-            "timestamp": time.time(),
-            "event": f"Metadata updated: {meta_summary}"
-        })
         
         return {"status": "success"}
     

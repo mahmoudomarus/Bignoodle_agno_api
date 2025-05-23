@@ -4,12 +4,6 @@ import json
 import os
 import time
 import logging
-import random
-import tenacity
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type, before_sleep_log
-import uuid
-import re
-from datetime import datetime
 
 from agno.agent import Agent
 from agno.memory.v2.db.postgres import PostgresMemoryDb
@@ -23,9 +17,6 @@ from agents.tavily_tools import TavilyTools
 from db.session import db_url
 from agents.progress_tracker import progress_tracker, ResearchStage
 
-# Constants
-DEFAULT_MODEL_ID = "o4-mini"  # Use this constant for consistent model naming
-DEFAULT_TOOL_MODEL = "o4-mini"  # Model used for tools functionality
 
 # Token usage tracker class for monitoring token consumption
 class TokenUsageTracker:
@@ -35,38 +26,9 @@ class TokenUsageTracker:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
-        self._encoding = None  # Cache the encoding object
-        
-    def _get_encoding(self):
-        """Get or create a cached tiktoken encoding object"""
-        if self._encoding is None:
-            try:
-                import tiktoken
-                self._encoding = tiktoken.encoding_for_model("gpt-4o")
-            except (ImportError, Exception):
-                # If tiktoken is not available or any other error
-                return None
-        return self._encoding
         
     def add_usage(self, prompt_tokens: int, completion_tokens: int):
         """Add token usage from a single operation"""
-        # Convert to int if strings are provided
-        if isinstance(prompt_tokens, str):
-            encoding = self._get_encoding()
-            if encoding:
-                prompt_tokens = len(encoding.encode(prompt_tokens))
-            else:
-                # Fallback if tiktoken not available
-                prompt_tokens = len(prompt_tokens) // 4  # Rough estimate
-                
-        if isinstance(completion_tokens, str):
-            encoding = self._get_encoding()
-            if encoding:
-                completion_tokens = len(encoding.encode(completion_tokens))
-            else:
-                # Fallback if tiktoken not available
-                completion_tokens = len(completion_tokens) // 4  # Rough estimate
-                
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
         self.total_tokens = self.prompt_tokens + self.completion_tokens
@@ -80,18 +42,6 @@ class TokenUsageTracker:
         if hasattr(tracker, 'total_tokens'):
             # If the object tracks total directly, ensure our total is recalculated
             pass
-        
-        # Support for OpenAI response objects
-        if hasattr(tracker, 'usage'):
-            usage = tracker.usage
-            if hasattr(usage, 'prompt_tokens'):
-                self.prompt_tokens += usage.prompt_tokens
-            if hasattr(usage, 'completion_tokens'):
-                self.completion_tokens += usage.completion_tokens
-            if hasattr(usage, 'total_tokens'):
-                # Don't add total directly, recalculate
-                pass
-                
         self.total_tokens = self.prompt_tokens + self.completion_tokens
         
     def get_usage(self):
@@ -169,67 +119,20 @@ class AdvancedReasoningTool(Tool):
         Returns:
             A structured reasoning process with steps and conclusion
         """
-        # Create an OpenAI client to actually perform the reasoning
-        try:
-            from api.settings import settings
-            import openai
-            
-            client = openai.OpenAI(api_key=settings.openai_api_key)
-            
-            # Construct a reasoning prompt that forces step by step thinking
-            reasoning_prompt = f"""
-            You need to break down this complex question using step-by-step logical reasoning.
-            
-            QUESTION: {question}
-            
-            CONTEXT: {context}
-            
-            Think through this problem systematically:
-            1. First, clearly define any key terms or concepts in the question
-            2. Identify the core issues or variables that need to be considered
-            3. Analyze how these elements relate to each other
-            4. Consider alternative perspectives or interpretations
-            5. Draw evidence-based conclusions
-            
-            Provide your detailed reasoning process and final conclusion.
-            """
-            
-            # Make the API call to get detailed reasoning
-            response = client.chat.completions.create(
-                model=DEFAULT_TOOL_MODEL,  # Using constant instead of hardcoded model name
-                messages=[
-                    {"role": "system", "content": "You are a logical reasoning assistant that breaks down complex problems step-by-step."},
-                    {"role": "user", "content": reasoning_prompt}
-                ],
-                temperature=0.2,
-                max_tokens=1000,
-            )
-            
-            # Extract the reasoning from the response
-            reasoning = response.choices[0].message.content if response.choices else "Error performing reasoning"
-            
-            # Return a structured result with the actual reasoning
-            return {
-                "question": question,
-                "reasoning_process": reasoning,
-                "conclusion": "See the final part of the reasoning process above."
+        # This would normally call an external reasoning service
+        # Here we're providing a structured format for the agent to use
+        return {
+            "question": question,
+            "reasoning_framework": "step-by-step logical deduction",
+            "instructions": "Break this problem down into clear steps, analyzing each component separately before combining insights.",
+            "reasoning_template": {
+                "step_1": "Define key terms and concepts",
+                "step_2": "Identify relevant factors and variables",
+                "step_3": "Analyze relationships between factors",
+                "step_4": "Consider alternative perspectives",
+                "step_5": "Draw evidence-based conclusions",
             }
-            
-        except Exception as e:
-            # Fall back to template if there's an error
-            return {
-                "question": question,
-                "error": f"Error performing reasoning: {str(e)}",
-                "reasoning_framework": "step-by-step logical deduction",
-                "instructions": "Break this problem down into clear steps, analyzing each component separately before combining insights.",
-                "reasoning_template": {
-                    "step_1": "Define key terms and concepts",
-                    "step_2": "Identify relevant factors and variables",
-                    "step_3": "Analyze relationships between factors",
-                    "step_4": "Consider alternative perspectives",
-                    "step_5": "Draw evidence-based conclusions",
-                }
-            }
+        }
     
     def compare_and_contrast(self, items: str, criteria: str) -> Dict:
         """
@@ -246,64 +149,17 @@ class AdvancedReasoningTool(Tool):
             items_data = json.loads(items)
             criteria_list = [c.strip() for c in criteria.split(",")]
             
-            # Create a comparison prompt for the LLM
-            comparison_prompt = f"""
-            You need to compare and contrast the following items across specific criteria.
-            
-            ITEMS TO COMPARE:
-            {json.dumps(items_data, indent=2)}
-            
-            COMPARISON CRITERIA:
-            {criteria}
-            
-            For each item and criterion:
-            1. Analyze how the item performs or relates to that criterion
-            2. Note similarities and differences between items
-            3. Highlight strengths and weaknesses
-            
-            Then provide an overall synthesis of patterns, insights, and conclusions from this comparison.
-            """
-            
-            # Create an OpenAI client to perform the comparison
-            from api.settings import settings
-            import openai
-            
-            client = openai.OpenAI(api_key=settings.openai_api_key)
-            
-            # Make the API call
-            response = client.chat.completions.create(
-                model=DEFAULT_TOOL_MODEL,  # Using constant
-                messages=[
-                    {"role": "system", "content": "You are a comparative analysis expert who excels at structured comparison."},
-                    {"role": "user", "content": comparison_prompt}
-                ],
-                temperature=0.2,
-                max_tokens=1500,
-            )
-            
-            # Extract the comparison from the response
-            comparison_analysis = response.choices[0].message.content if response.choices else "Error performing comparison"
-            
-            # Return a structured result with the actual comparison
-            return {
+            # Create a comparison matrix template
+            comparison = {
                 "items": [item["name"] for item in items_data],
                 "criteria": criteria_list,
-                "comparison_analysis": comparison_analysis
-            }
-            
-        except json.JSONDecodeError:
-            return {"error": "Invalid JSON format for items. Please provide properly formatted data."}
-        except Exception as e:
-            # Fall back to template if there's an error
-            comparison = {
-                "items": items,
-                "criteria": criteria,
-                "error": f"Error performing comparison: {str(e)}",
                 "analysis_framework": "structured comparison matrix",
                 "instructions": "Fill in this comparison matrix, analyzing each item against each criterion. Then synthesize overall patterns and insights."
             }
             
             return comparison
+        except json.JSONDecodeError:
+            return {"error": "Invalid JSON format for items."}
     
     def synthesize_findings(self, findings: str, perspective: str) -> Dict:
         """
@@ -319,60 +175,9 @@ class AdvancedReasoningTool(Tool):
         try:
             findings_data = json.loads(findings)
             
-            # Create a synthesis prompt for the LLM
-            synthesis_prompt = f"""
-            You need to synthesize the following research findings from a {perspective} perspective.
-            
-            RESEARCH FINDINGS:
-            {json.dumps(findings_data, indent=2)}
-            
-            ANALYTICAL PERSPECTIVE: {perspective}
-            
-            Your synthesis should:
-            1. Identify key themes and patterns across all sources
-            2. Note agreements and contradictions between sources
-            3. Evaluate the quality and reliability of each source
-            4. Integrate insights into a cohesive narrative
-            5. Apply a {perspective} perspective to draw deeper meaning
-            
-            Provide a comprehensive synthesis that goes beyond summarizing to generate new insights.
-            """
-            
-            # Create an OpenAI client to perform the synthesis
-            from api.settings import settings
-            import openai
-            
-            client = openai.OpenAI(api_key=settings.openai_api_key)
-            
-            # Make the API call
-            response = client.chat.completions.create(
-                model=DEFAULT_TOOL_MODEL,  # Using constant
-                messages=[
-                    {"role": "system", "content": f"You are a research synthesis expert with expertise in {perspective} analysis."},
-                    {"role": "user", "content": synthesis_prompt}
-                ],
-                temperature=0.2,
-                max_tokens=1500,
-            )
-            
-            # Extract the synthesis from the response
-            synthesis_analysis = response.choices[0].message.content if response.choices else "Error performing synthesis"
-            
-            # Return a structured result with the actual synthesis
-            return {
-                "source_count": len(findings_data),
-                "analytical_perspective": perspective,
-                "synthesis": synthesis_analysis
-            }
-            
-        except json.JSONDecodeError:
-            return {"error": "Invalid JSON format for findings. Please provide properly formatted data."}
-        except Exception as e:
-            # Fall back to template if there's an error
             return {
                 "synthesis_framework": f"{perspective} analysis",
-                "source_count": "unknown (invalid JSON)",
-                "error": f"Error performing synthesis: {str(e)}",
+                "source_count": len(findings_data),
                 "synthesis_process": {
                     "step_1": "Identify key themes across all sources",
                     "step_2": "Note agreements and contradictions between sources",
@@ -381,6 +186,8 @@ class AdvancedReasoningTool(Tool):
                     "step_5": f"Apply {perspective} perspective to draw deeper meaning"
                 }
             }
+        except json.JSONDecodeError:
+            return {"error": "Invalid JSON format for findings."}
 
 
 class SupervisorToolKit(Tool):
@@ -388,7 +195,7 @@ class SupervisorToolKit(Tool):
     A toolkit that allows the supervisor agent to spawn and coordinate researcher agents.
     """
 
-    def __init__(self, create_researcher_fn: callable, model_id: str = DEFAULT_MODEL_ID, user_id: Optional[str] = None):
+    def __init__(self, create_researcher_fn: callable, model_id: str = "gpt-4.1-mini", user_id: Optional[str] = None):
         self.create_researcher_fn = create_researcher_fn
         self.model_id = model_id
         self.user_id = user_id
@@ -666,7 +473,7 @@ class SupervisorToolKit(Tool):
 
 
 def create_researcher_agent(
-    model_id: str = DEFAULT_MODEL_ID, 
+    model_id: str = "gpt-4.1-mini", 
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
     research_question: str = "",
@@ -788,18 +595,18 @@ def create_researcher_agent(
         memory=Memory(
             model=OpenAIChat(id=model_id),
             db=PostgresMemoryDb(table_name="user_memories", db_url=db_url),
-            delete_memories=False,
+            delete_memories=True,
             clear_memories=True,
         ),
         enable_agentic_memory=True,
         markdown=True,
         add_datetime_to_instructions=True,
-        debug_mode=False,  # Changed to False for production
+        debug_mode=True,
     )
 
 
 def create_supervisor_agent(
-    model_id: str = DEFAULT_MODEL_ID,  # Changed from gpt-4o to DEFAULT_MODEL_ID
+    model_id: str = "gpt-4.1-mini",
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> Agent:
@@ -888,242 +695,21 @@ def create_supervisor_agent(
         memory=Memory(
             model=OpenAIChat(id=model_id),
             db=PostgresMemoryDb(table_name="user_memories", db_url=db_url),
-            delete_memories=False,
+            delete_memories=True,
             clear_memories=True,
         ),
         enable_agentic_memory=True,
         markdown=True,
         add_datetime_to_instructions=True,
-        debug_mode=False,  # Changed to False for production
+        debug_mode=True,
     )
 
 
-class CryptoAwareAgent(Agent):
-    """
-    Enhanced Agent that forces using Tavily search tools and disables financial tools for crypto-related queries.
-    This prevents wrong tool selection issues and ensures proper research is conducted.
-    """
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Define crypto keywords for detection - ENHANCED LIST
-        self.crypto_terms = [
-            "protocol", "blockchain", "bitcoin", "ethereum", "crypto", "token", "nft", 
-            "defi", "ordinal", "web3", "dao", "dapp", "smart contract", "wallet", 
-            "mining", "staking", "validator", "consensus", "mainnet", "testnet",
-            "btc", "eth", "sol", "bnb", "xrp", "ada", "avax", "tron", "tap protocol",
-            "tap", "trac", "dmt", "digital matter theory", "bitmaps", "nat token", "hiros",
-            "snat", "sovyrn", "satoshi", "bitcoin ordinals", "$nat", "runes",
-            "TAP Protocol", "TAP protocol", "tap protocol bitcoin", "ordinals bitcoin",
-            "bitcoin ecosystem", "bitcoin layers", "bitcoin runes", "bitcoin ordinal",
-            "bitcoin inscription", "bitcoin nft", "bitcoin token", "bitcoin defi",
-            "satoshi", "sats", "inscription", "ordinal", "ordinals", "rune", "brc-20",
-            "cryptocurrency", "digital asset", "blockchain technology", "decentralized",
-            "pow", "proof of work", "proof of stake", "pos", "consensus mechanism"
-        ]
-    
-    def _is_crypto_related(self, text):
-        """Detect if text contains crypto-related terms"""
-        if not text:
-            return False
-            
-        text_lower = text.lower()
-        for term in self.crypto_terms:
-            if term.lower() in text_lower:
-                return True
-        return False
-    
-    def _is_information_seeking(self, text):
-        """Detect if this is an information-seeking query that should trigger search"""
-        if not text:
-            return False
-            
-        info_patterns = [
-            "what is", "how does", "explain", "tell me about", "describe", 
-            "who is", "when was", "where is", "why is", "research", "information on",
-            "details about", "history of", "can you provide", "find information",
-            "?", "learn about", "understand", "overview of"
-        ]
-        
-        text_lower = text.lower()
-        for pattern in info_patterns:
-            if pattern in text_lower:
-                return True
-        return False
-    
-    def _find_tavily_search_tool(self):
-        """Find the tavily search tool in the available tools"""
-        for tool in self.tools:
-            if hasattr(tool, 'tool_types'):
-                for tt in tool.tool_types:
-                    if 'tavily_search' in tt.name or 'search' in tt.name:
-                        return tt.name
-        return None
-    
-    def run(self, prompt: str, **kwargs):
-        """
-        Override the run method to:
-        1. Check if this is a comprehensive research request that should be redirected
-        2. Force using Tavily search for any information-seeking query
-        3. Completely disable financial tools for crypto queries
-        4. Force tool usage for all queries requiring research
-        """
-        # First check if this is a comprehensive research request that
-        # should be redirected to the multi-agent research workflow
-        if hasattr(self, 'detect_research_request') and callable(self.detect_research_request):
-            research_response = self.detect_research_request(self, prompt, **kwargs)
-            if research_response:
-                # This is a comprehensive research request, return the session information
-                return research_response
-                
-        # Always check if this is a crypto-related and/or information-seeking query
-        is_crypto_query = self._is_crypto_related(prompt)
-        is_info_seeking = self._is_information_seeking(prompt)
-        
-        # Find search tool
-        tavily_search_name = self._find_tavily_search_tool()
-        
-        # Create a completely modified prompt if this is an information query
-        if is_info_seeking or "research" in prompt.lower():
-            # This is the critical change - for ANY information query, we inject
-            # instructions that FORCE using tavily search first
-            modified_prompt = f"""
-[CRITICAL TOOL USAGE INSTRUCTION - HIGHEST PRIORITY]
-
-You are responding to an information request: "{prompt}"
-
-Before answering, you MUST:
-1. Use {tavily_search_name} as your FIRST tool to gather current, accurate information
-2. NEVER answer solely from memory without verifying with search
-3. Use multiple search queries to explore different aspects of the topic
-4. Cite your sources with proper links
-
-For ANY information question, search is MANDATORY - not optional.
-
-"""
-            
-            # Add crypto-specific instructions if needed
-            if is_crypto_query:
-                term = next((term for term in self.crypto_terms if term.lower() in prompt.lower()), "crypto term")
-                modified_prompt += f"""
-CRYPTO DOMAIN DETECTED: This query includes "{term}" which is a CRYPTOCURRENCY/BLOCKCHAIN topic.
-
-For cryptocurrency topics, you MUST additionally:
-1. ONLY use {tavily_search_name} for research - NEVER use financial tools
-2. DO NOT treat crypto tokens/protocols as companies or stocks
-3. Look for the latest information as the crypto space changes rapidly
-4. Pay special attention to tokenomics, technology, and recent developments
-5. Use official documentation and trusted crypto sources when possible
-
-"""
-            
-            # Append the original prompt
-            modified_prompt += f"\nUSER QUERY: {prompt}\n"
-            
-            # Run with the heavily modified prompt that forces search
-            return run_with_retry(self, modified_prompt, **kwargs)
-        
-        # For standard queries, still override but with less aggressive modification
-        return run_with_retry(self, prompt, **kwargs)
-            
-    def select_tool(self, tool_name: str, args: dict, follow_up: str = None):
-        """Override tool selection to prevent financial tools for crypto queries"""
-        # First check if this session's domain is known via progress_tracker
-        domain = None
-        is_crypto = False
-        
-        # Try to get domain info from the agent's state
-        if hasattr(self, 'state') and self.state:
-            # Check if domain info is stored directly in agent state
-            if 'domain' in self.state:
-                domain = self.state.get('domain')
-                is_crypto = domain == 'cryptocurrency'
-            
-            # Check if we have a session_id to look up domain from progress tracker
-            elif 'session_id' in self.state:
-                session_id = self.state.get('session_id')
-                try:
-                    # Try to get domain information from progress tracker
-                    from agents.progress_tracker import progress_tracker
-                    session_status = progress_tracker.get_session_status(session_id)
-                    if not isinstance(session_status, dict) or 'error' in session_status:
-                        # If can't get session info, fall back to text analysis
-                        pass
-                    else:
-                        meta = session_status.get('meta', {})
-                        domain = meta.get('domain')
-                        is_crypto = meta.get('is_crypto', False)
-                except:
-                    # If any error occurs, fall back to text analysis
-                    pass
-        
-        # Enforce crypto domain policy if we know this is a crypto domain
-        if domain == 'cryptocurrency' or is_crypto:
-            # For crypto domains, ONLY allow tavily_search and block ALL financial tools
-            if any(financial_tool in tool_name.lower() for financial_tool in 
-                   ['get_stock_price', 'get_company_info', 'get_company_news', 
-                    'get_analyst_recommendations', 'get_stock_fundamentals', 
-                    'get_historical_prices', 'yfinance']):
-                # Find and use tavily_search instead
-                for tool in self.tools:
-                    if hasattr(tool, 'tool_types'):
-                        for tt in tool.tool_types:
-                            if 'tavily_search' in tt.name:
-                                crypto_query = follow_up if follow_up else "cryptocurrency information"
-                                return super().select_tool(tt.name, {"query": crypto_query}, follow_up)
-        
-        # Block GET_CHAT_HISTORY, UPDATE_USER_MEMORY from being used as primary tools for questions
-        if follow_up and any(q in follow_up.lower() for q in ["what is", "how does", "explain", "tell me about", "who", "what", "when", "?"]):
-            if any(memory_tool in tool_name.lower() for memory_tool in ["get_chat_history", "update_user_memory"]):
-                # Force using tavily_search instead for any information query
-                for tool in self.tools:
-                    if hasattr(tool, 'tool_types'):
-                        for tt in tool.tool_types:
-                            if 'tavily_search' in tt.name:
-                                # Replace the memory tool call with tavily_search
-                                return super().select_tool(tt.name, {"query": follow_up}, follow_up)
-        
-        # Additional detection for crypto ticker patterns to reject YFinance
-        if tool_name.lower() in ['get_stock_price', 'get_company_info', 'get_company_news', 
-                                'get_analyst_recommendations', 'get_stock_fundamentals', 'get_historical_prices']:
-            # Reject crypto ticker patterns (ending in -USD or .X)
-            if 'ticker' in args and (
-                args['ticker'].endswith('-USD') or       # Crypto pattern on Yahoo Finance
-                args['ticker'].endswith('.X') or         # Crypto index pattern
-                args['ticker'] in ['BTC', 'ETH', 'SOL', 'XRP', 'ADA', 'DOT', 'AVAX'] or  # Common crypto tickers
-                args['ticker'] in ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XRPUSD']               # No hyphen variants
-            ):
-                # Force using tavily_search instead
-                for tool in self.tools:
-                    if hasattr(tool, 'tool_types'):
-                        for tt in tool.tool_types:
-                            if 'tavily_search' in tt.name:
-                                # Replace with search for the crypto ticker
-                                crypto_query = f"Latest information about {args['ticker']} cryptocurrency"
-                                return super().select_tool(tt.name, {"query": crypto_query}, follow_up)
-        
-        # Check if we're trying to use a financial tool for a crypto query
-        if follow_up and self._is_crypto_related(follow_up) and any(
-            financial_name in tool_name.lower() for financial_name in 
-            ['get_company_info', 'get_company_news', 'get_analyst_recommendations', 'stock', 'company', 'financial']
-        ):
-            # Force using tavily_search instead
-            for tool in self.tools:
-                if hasattr(tool, 'tool_types'):
-                    for tt in tool.tool_types:
-                        if 'tavily_search' in tt.name:
-                            # Replace the tool call with tavily_search
-                            return super().select_tool(tt.name, {"query": follow_up}, follow_up)
-        
-        # Use normal processing for other tool selections
-        return super().select_tool(tool_name, args, follow_up)
-
-
 def get_deep_research_agent(
-    model_id: str = DEFAULT_MODEL_ID,  # Using constant instead of hardcoded "o4-mini"
+    model_id: str = "gpt-4.1-mini",
     user_id: Optional[str] = None,
     session_id: Optional[str] = None,
-    debug_mode: bool = False,  # Changed to False for production
+    debug_mode: bool = True,
 ) -> Agent:
     """
     Create a Deep Research agent with multi-agent workflow capabilities.
@@ -1137,17 +723,6 @@ def get_deep_research_agent(
     Returns:
         A new Deep Research agent
     """
-    # Configure Tavily with advanced search capabilities
-    tavily_tools = TavilyTools(
-        search_depth="advanced",
-        max_results=20,
-        include_answer=True,
-        include_raw_content=True,
-    )
-    
-    # Create advanced reasoning tools
-    reasoning_tools = AdvancedReasoningTool()
-    
     # Create the supervisor tools that can spawn researcher agents
     supervisor_tools = SupervisorToolKit(
         create_researcher_fn=create_researcher_agent,
@@ -1155,211 +730,36 @@ def get_deep_research_agent(
         user_id=user_id,
     )
     
-    # Define financial tools last to give lowest priority
-    financial_tools = YFinanceTools(
-        stock_price=True,
-        analyst_recommendations=True,
-        stock_fundamentals=True,
-        historical_prices=True,
-        company_info=True,
-        company_news=True,
+    # Configure Tavily with advanced search capabilities
+    tavily_tools = TavilyTools(
+        search_depth="advanced",
+        max_results=20,  # Increased from 15 to 20 for more comprehensive results
+        include_answer=True,
+        include_raw_content=True,
     )
     
-    # Add a custom pre-processing function to detect comprehensive research requests 
-    # and redirect them to the multi-agent workflow
-    def detect_research_request(agent, prompt, **kwargs):
-        """
-        Detect if this is a comprehensive research request that should be handled
-        by the multi-agent research workflow instead of a single agent response.
-        """
-        # If we're already in a multi-agent workflow, don't intercept
-        if kwargs.get('in_research_workflow', False):
-            return None  # Continue with normal processing
-            
-        # Check for phrases that indicate a comprehensive research request
-        research_phrases = [
-            "comprehensive research", 
-            "detailed research",
-            "research report", 
-            "in-depth research",
-            "thorough analysis",
-            "detailed analysis",
-            "do research on",
-            "conduct research",
-            "comprehensive report",
-            "detailed report"
-        ]
-        
-        # Check if this looks like a research request
-        is_research_request = False
-        
-        # Check for research phrases
-        if any(phrase in prompt.lower() for phrase in research_phrases):
-            is_research_request = True
-        
-        # Check if it's a long question (likely complex research)
-        if len(prompt.split()) > 15:
-            # Long questions are likely research requests
-            is_research_request = True
-            
-        # Also check for question words + topic
-        research_patterns = [
-            "what are the", "how does", "explain the", "analyze",
-            "compare", "evaluate", "investigate", "examine"
-        ]
-        if any(pattern in prompt.lower() for pattern in research_patterns):
-            # These are likely research-oriented questions
-            is_research_request = True
-            
-        if is_research_request:
-            try:
-                # Import here to avoid circular imports
-                from agents.deep_research_agent import DeepResearchAgent, create_supervisor_agent
-                from agents.progress_tracker import progress_tracker
-                
-                # Create a supervisor agent
-                supervisor = create_supervisor_agent(model_id=model_id, user_id=user_id)
-                
-                # Create a research agent
-                research_agent = DeepResearchAgent(
-                    supervisor_agent=supervisor,
-                    researcher_agent_factory=create_researcher_agent,
-                    model=model_id
-                )
-                
-                # Create a session
-                session_id = progress_tracker.create_session()
-                
-                # Start the research in a background thread
-                import threading
-                
-                def run_research():
-                    try:
-                        # Execute the research with the query
-                        research_agent.execute_research(
-                            research_question=prompt,
-                            session_id=session_id,
-                            debug_mode=debug_mode
-                        )
-                    except Exception as e:
-                        logging.error(f"Error in background research task: {str(e)}")
-                        
-                # Start the research thread
-                research_thread = threading.Thread(target=run_research)
-                research_thread.daemon = True
-                research_thread.start()
-                
-                # Return a message about the research being started
-                return f"""
-📚 **Comprehensive Research Started**
-
-Your question has been submitted to our advanced multi-agent research system.
-
-**Session ID:** `{session_id}`
-
-You can track progress and get your full report at:
-- Progress: `/v1/agents/research/progress/{session_id}`
-- Detailed Progress: `/v1/agents/research/progress/{session_id}/details`
-- Final Report: `/v1/agents/research/report/{session_id}`
-
-The research will be conducted by multiple specialized agents working together to provide a comprehensive, well-cited report.
-                """
-            except Exception as e:
-                logging.error(f"Error starting comprehensive research: {str(e)}")
-                # Fall back to normal processing if research start fails
-                return None
-                
-        # Not a research request or failed to start research
-        return None
-        
-    # Define force_tavily_search system message
-    force_tavily_search = dedent("""
-    [CRITICAL TOOL USAGE INSTRUCTIONS - HIGHEST PRIORITY]
+    # Create advanced reasoning tools
+    reasoning_tools = AdvancedReasoningTool()
     
-    You MUST follow these rules for ALL queries:
-    
-    1. ALWAYS use your web search tool as your PRIMARY and FIRST tool for ALL research questions
-    
-    2. NEVER use GET_CHAT_HISTORY, UPDATE_USER_MEMORY as primary information sources
-       - These are only for context, not for research or answering questions!
-    
-    3. For ALL cryptocurrency/blockchain topics (TAP, DMT, Bitcoin, NFTs, etc.):
-       - NEVER use GET_COMPANY_INFO, GET_COMPANY_NEWS, or financial tools
-       - ALWAYS use your web search tool EXCLUSIVELY
-       - These are NOT stocks or companies - they are protocols/technologies
-    
-    4. For ANY question starting with "what is", "how does", "tell me about", etc:
-       - You MUST run your web search tool FIRST
-       - NEVER answer solely from memory
-    
-    5. For EVERY search, use MULTIPLE QUERIES to gather comprehensive information
-    
-    These instructions supersede all other guidelines.
-    """)
-    
-    # Define the crypto audience context in detail with resources
-    crypto_audience_context = dedent("""
-    [CRYPTO AUDIENCE CONTEXT - REFERENCE INFO]
-    
-    Audience: retail + pro crypto traders who need *actionable*, *up-to-date* intel on Ordinals/Runes/DMT/TAP, not academic history.
-    Tone: concise, cite first-hand sources, highlight risk.
-    Time preference: prefer sources <30 days old for market topics.
-    
-    Key resources (query these directly with tavily_search):
-    - Bitcoin Ordinals: https://help.magiceden.io/en/articles/7154941-bitcoin-ordinals-a-beginner-s-guide
-    - Bitcoin Runes: https://community.magiceden.io/learn/runes-guide
-    - Bitmaps: https://help.magiceden.io/en/articles/8175699-understanding-bitmap-and-the-ordinals-metaverse
-    - $NAT tokens: https://natgmi.com/#faq
-    - DMT: https://digital-matter-theory.gitbook.io/digital-matter-theory
-    - TAP protocol: https://sovryn.com/all-things-sovryn/tap-protocol-bitcoin
-    - HIROS: https://superfan.gitbook.io/hiros
-    
-    When researching crypto topics:
-    1. ALWAYS use tavily_search (NEVER financial tools)
-    2. Use multiple specific queries for comprehensive research
-    3. Cite sources with links in all responses
-    """)
-    
-    # IMPORTANT: Order of tools matters for the UI tool selection!
-    # Place Tavily search first so it's the default selected tool for queries
-    return CryptoAwareAgent(  # Use the enhanced Agent class that's crypto-aware
+    return Agent(
         name="Deep Research Agent",
         agent_id="deep_research_agent",
         user_id=user_id,
         session_id=session_id,
         model=OpenAIChat(id=model_id),
         tools=[
-            tavily_tools,      # PRIMARY search tool (placed FIRST for UI priority)
-            reasoning_tools,   # Advanced reasoning capabilities 
             supervisor_tools,  # Coordinator for multi-agent research
-            financial_tools,   # Financial analysis tools (placed last and separate variable)
+            tavily_tools,      # Primary search tool (placed second for importance)
+            reasoning_tools,   # Advanced reasoning capabilities
+            YFinanceTools(     # Financial analysis tools
+                stock_price=True,
+                analyst_recommendations=True,
+                stock_fundamentals=True,
+                historical_prices=True,
+                company_info=True,
+                company_news=True,
+            ),
         ],
-        system_message=force_tavily_search + crypto_audience_context + dedent("""
-        [ABOUT THE AGENT]
-        
-        You are a deep research agent with advanced capabilities for conducting comprehensive research.
-        
-        When researching topics:
-        1. Break complex questions into multiple specific searches
-        2. Use Tavily search to gather information from multiple sources
-        3. Synthesize findings into well-cited, comprehensive reports
-        4. Always include citations and references to your sources
-        
-        [DOMAIN-SPECIFIC INSTRUCTIONS]
-        
-        For cryptocurrency/blockchain topics (HIGHEST PRIORITY):
-        - TAP protocol, DMT, Bitcoin Ordinals, Sovyrn, etc. are ALL crypto/blockchain topics
-        - NEVER confuse these with stocks, ticker symbols, or companies
-        - ALWAYS use tavily_search for these topics, NEVER financial tools
-        - Follow the sources listed in [CRYPTO AUDIENCE CONTEXT] section
-        
-        For financial topics:
-        - Only use financial tools for legitimate public companies and stocks
-        - For ambiguous terms, always verify with tavily_search first
-        
-        [REMEMBER]
-        NO questions should be answered without using search tools first!
-        """),
         description=dedent("""\
             You are DeepResearch, an exceptionally powerful AI research agent designed to conduct comprehensive, in-depth research on any topic. You coordinate a team of specialized researcher agents to produce thorough, well-formatted research reports with academic-level rigor and precision.
             
@@ -1372,11 +772,9 @@ The research will be conducted by multiple specialized agents working together t
             
             You maintain the highest standards of scholarship, including thorough source verification, critical analysis of information, and proper citation practices. Your research is comprehensive, nuanced, and exhaustive, leaving no stone unturned.
             
-            Your audience is primarily crypto traders and investors as described in [CRYPTO AUDIENCE CONTEXT]. Use the official resources mentioned there when researching crypto topics.
+            Your audience typically comes from the world of crypto investing and crypto collectables. They like to trade Bitcoin Ordinals and NFTs, often using the Magic Eden marketplace (magiceden.us) to research bitcoin ordinals projects and bitcoin runes projects. You may get questions about Bitmaps, $NAT tokens, DMT (digital matter theory), the TAP protocol which is associated with TRAC and Bitcoin, and HIROS. Be prepared to provide detailed research on these crypto-related topics.
             
             CRITICAL: You MUST use Tavily search as your EXCLUSIVE research tool for all web-based information gathering. No other web search tools are available. Only use YFinance for specialized financial data queries.
-            
-            DELIVERY TIMING: Your research reports are delivered IMMEDIATELY after processing. DO NOT tell users to expect reports in 24-48 hours or any future timeframe. Reports are considered complete and final upon delivery.
         """),
         instructions=dedent("""\
             As DeepResearch, your mission is to deliver exhaustive, authoritative research on any topic requested by the user. You'll orchestrate a sophisticated multi-agent research workflow to produce scholarly-level research reports. For each research request, follow this rigorous methodology:
@@ -1387,20 +785,29 @@ The research will be conducted by multiple specialized agents working together t
                - Decompose complex topics into 5-10 interrelated research components, ensuring comprehensive coverage
                - Create a logical hierarchy of research questions that builds from foundational understanding to specialized insights
                - Prioritize DEPTH, THOROUGHNESS, and ACADEMIC RIGOR in your approach
+               - For each component, identify specific information needs and potential sources of evidence
             
             2. **Multi-Agent Research Orchestration**:
                - For each research component, use `create_research_task` to spawn a specialized researcher agent
                - Provide each researcher with precise, targeted questions and methodological instructions
                - ALWAYS set search_depth to "advanced" for maximum thoroughness
+               - Provide specific guidance on search strategies and domain-specific considerations
                - Instruct researchers to EXCLUSIVELY use tavily_search as their PRIMARY research tool
+               - Sequence research tasks to build on prior findings when logical
+               - Monitor progress and results, providing additional guidance as needed
             
             3. **Advanced Analytical Processing**:
                - Apply sophisticated reasoning frameworks to complex information:
                  * Use chain_of_thought_reasoning for step-by-step analytical breakdowns of difficult concepts
                  * Apply compare_and_contrast to systematically evaluate competing perspectives, theories, or options
                  * Employ synthesize_findings to integrate information across disciplinary boundaries
-               - Critically evaluate source credibility using academic standards
+               - Critically evaluate source credibility using academic standards:
+                 * Publication reputation and peer-review status
+                 * Author credentials and expertise
+                 * Methodological rigor and transparency
+                 * Recency and relevance to the question at hand
                - Identify patterns, contradictions, and gaps across sources
+               - Apply domain-appropriate analytical frameworks and methodologies
             
             4. **Comprehensive Synthesis & Report Construction**:
                - After thorough research, systematically integrate all findings into a cohesive knowledge structure
@@ -1408,33 +815,100 @@ The research will be conducted by multiple specialized agents working together t
                - Evaluate the overall weight of evidence for key conclusions
                - Acknowledge areas of uncertainty, conflicting evidence, or knowledge gaps
                - Use the `generate_research_report` tool to create a publication-quality final report
+               - ALWAYS enable include_visualizations for enhanced data presentation
+               - Select the optimal formatting style based on research purpose:
+                 * Academic: For scholarly, scientific, or educational investigations (default style)
+                 * Business: For market analysis, strategic planning, or organizational research
+                 * Journalistic: For current events, trend analysis, or public interest topics
             
             5. **Publication-Quality Report Standards**:
-               - Structure reports with exceptional clarity and scholarly organization:
-                 * Executive Summary: Concise overview of key findings
-                 * Table of Contents: Hierarchical organization of sections
-                 * Introduction: Context, significance, and scope
+               - Structure your reports with exceptional clarity and scholarly organization:
+                 * Executive Summary: Concise overview of research question, methodology, and key findings
+                 * Table of Contents: Hierarchical organization of report sections
+                 * Introduction: Context, significance, and scope of the research
+                 * Literature Review/Background: Synthesis of existing knowledge on the topic
+                 * Methodology: Transparent explanation of research approach
                  * Findings/Results: Systematically presented evidence organized by themes
                  * Analysis/Discussion: Critical interpretation of findings with supporting evidence
                  * Conclusions: Evidence-based answers to the research questions
+                 * Limitations: Honest assessment of research constraints and uncertainties
                  * References: Comprehensive bibliography with properly formatted citations
-               - Include precise citations for EVERY factual claim or quotation
+               - Include precise citations for EVERY factual claim, insight, or quotation
                - Always include complete URLs for web sources to enable verification
+               - Format information using academic conventions (tables, headings, etc.)
+               - Use visualizations to clarify complex relationships or quantitative information
                
-            6. **Crypto-Specific Research Excellence**:
-               - Follow the audience guidelines in [CRYPTO AUDIENCE CONTEXT]
-               - For crypto topics, NEVER use financial tools (YFinance), ONLY use tavily_search
-               - Present quantitative data in standardized formats
-               - Compare multiple data sources to establish reliability
-               
+            6. **Domain-Specific Research Excellence**:
+               - For financial/economic research:
+                 * Utilize YFinance tools for precise market and company data
+                 * Present quantitative data in standardized financial formats
+                 * Apply appropriate financial analytical frameworks (e.g., SWOT, Porter's Five Forces)
+                 * Include risk analysis and confidence intervals for projections
+                 * Compare multiple data sources to establish reliability
+               - For scientific/technical research:
+                 * Prioritize peer-reviewed and authoritative technical sources
+                 * Explain complex technical concepts with precision and clarity
+                 * Present competing theories or models with fair representation
+                 * Include disciplinary consensus views alongside emerging research
+                 * Incorporate appropriate technical terminology with definitions
+               - For historical/social research:
+                 * Consider multiple perspectives and interpretive frameworks
+                 * Acknowledge cultural and historical context of sources
+                 * Distinguish between primary and secondary sources
+                 * Address potential biases in historical accounts
+                 * Consider socio-political factors influencing the topic
+            
             7. **Research Integrity & Source Validation**:
-               - Apply rigorous source evaluation standards
-               - Maintain intellectual honesty throughout
+               - Apply rigorous source evaluation standards:
+                 * Currency: Prioritize recent sources for rapidly evolving topics
+                 * Authority: Evaluate author credentials and institutional affiliations
+                 * Accuracy: Cross-verify facts across multiple independent sources
+                 * Objectivity: Assess potential biases or conflicts of interest
+                 * Coverage: Ensure comprehensive treatment of the topic
+               - Maintain intellectual honesty throughout:
+                 * Explicitly distinguish between facts, expert opinions, and your analysis
+                 * Acknowledge contradictory evidence and alternative interpretations
+                 * Clearly mark areas of uncertainty or limited evidence
+                 * Identify methodological limitations in source materials
+                 * Present competing viewpoints fairly and accurately
                - Document your research process transparently
             
-            RESEARCH APPROACH: Your methodology should mirror the standards of doctoral-level academic research, emphasizing comprehensiveness, methodological rigor, critical analysis, and evidence-based conclusions.
+            RESEARCH APPROACH: Your methodology should mirror the standards of doctoral-level academic research, emphasizing comprehensiveness, methodological rigor, critical analysis, and evidence-based conclusions. You leave no aspect of the topic unexplored and no stone unturned in your pursuit of authoritative understanding.
             
-            CRITICAL DELIVERY INSTRUCTION: Your research is performed in real-time and reports are delivered IMMEDIATELY in the current conversation. DO NOT tell users to expect reports in 24-48 hours or any future timeframe. Reports are considered complete and final upon delivery.
+            Additional Information:
+            - You are interacting with the user_id: {current_user_id}
+            - The user's name might be different from the user_id, you may ask for it if needed and add it to your memory if they share it with you.
+            - The current date and time is: {current_datetime}
+            
+            AUDIENCE CONTEXT: Your users typically come from the world of crypto investing and crypto collectibles with specific interests in:
+            
+            - Bitcoin Ordinals: Digital collectibles on Bitcoin blockchain
+              Resource: https://help.magiceden.io/en/articles/7154941-bitcoin-ordinals-a-beginner-s-guide
+              
+            - NFTs: Non-fungible tokens across various blockchains
+            
+            - Magic Eden marketplace: A popular platform for trading Bitcoin Ordinals
+              Resource: https://magiceden.us
+              
+            - Bitcoin Runes: A new token standard on Bitcoin
+              Resource: https://community.magiceden.io/learn/runes-guide
+              
+            - Bitmaps: An ordinals metaverse project
+              Resource: https://help.magiceden.io/en/articles/8175699-understanding-bitmap-and-the-ordinals-metaverse
+              
+            - $NAT tokens: Native Bitcoin tokens
+              Resource: https://natgmi.com/#faq
+              
+            - DMT (Digital Matter Theory): A Bitcoin-native project
+              Resource: https://digital-matter-theory.gitbook.io/digital-matter-theory
+              
+            - TAP protocol: Associated with TRAC and Bitcoin
+              Resource: https://sovryn.com/all-things-sovryn/tap-protocol-bitcoin
+              
+            - HIROS: A Bitcoin project
+              Resource: https://superfan.gitbook.io/hiros
+              
+            When researching these topics, prioritize finding the most current information as the crypto space evolves rapidly. Include market trends, recent developments, and technical analysis when relevant. Always cite reliable sources and verify information across multiple references when possible.
         """),
         add_state_in_messages=True,
         storage=PostgresAgentStorage(table_name="deep_research_agent_sessions", db_url=db_url),
@@ -1444,7 +918,7 @@ The research will be conducted by multiple specialized agents working together t
         memory=Memory(
             model=OpenAIChat(id=model_id),
             db=PostgresMemoryDb(table_name="user_memories", db_url=db_url),
-            delete_memories=False,
+            delete_memories=True,
             clear_memories=True,
         ),
         enable_agentic_memory=True,
@@ -1452,11 +926,6 @@ The research will be conducted by multiple specialized agents working together t
         add_datetime_to_instructions=True,
         debug_mode=debug_mode,
     )
-
-    # Attach the research request detection function to the agent
-    agent.detect_research_request = detect_research_request
-    
-    return agent
 
 
 class DeepResearchAgent:
@@ -1467,12 +936,10 @@ class DeepResearchAgent:
 
     def __init__(
         self,
-        supervisor_agent: Agent = None,
+        supervisor_agent: Agent,
         tools: List[Tool] = None,
         researcher_agent_factory=None,
         max_iterations: int = 5,
-        model: str = "gpt-4o",
-        logger=None,
     ):
         self.supervisor_agent = supervisor_agent
         self.tools = tools or []
@@ -1481,432 +948,241 @@ class DeepResearchAgent:
         self.token_usage = TokenUsageTracker()
         self.session_id = None
         
-        # New attributes for simplified implementation
-        self.model = model
-        self.logger = logger or logging.getLogger()
+    def execute_research(self, question: str, chunk_size: int = 3000) -> Dict[str, Any]:
+        """Execute deep research on a question"""
+        start_time = time.time()
         
-        # Set up progress tracker
-        from agents.progress_tracker import progress_tracker
-        self.progress_tracker = progress_tracker
+        # Create a new progress tracking session if not already created
+        if not self.session_id:
+            self.session_id = progress_tracker.create_session()
+        progress_tracker.update_stage(self.session_id, ResearchStage.PLANNING)
         
-        # OpenAI client
-        import openai
-        from api.settings import settings
-        self.client = openai.OpenAI(api_key=settings.openai_api_key)
+        # Log the research question
+        logging.info(f"Executing deep research for: {question}")
         
-    def execute_research(self, research_question: str, research_topic=None, previous_findings=None, next_steps=None, conversation_time=None, session_id=None, **kwargs):
-        """Execute a research task with multi-agent reasoning and search"""
-        debug_mode = kwargs.get('debug_mode', False)  # Set to False for production
-        delete_memories = kwargs.get('delete_memories', False)  # Changed to False to accumulate context
-        timeout_seconds = kwargs.get('timeout_seconds', 300)  # Default 5 minute timeout
-        is_crypto = False
-        domain = "general"
+        # Add planning task
+        planning_task_id = progress_tracker.add_task(
+            self.session_id, 
+            "Research Planning", 
+            "Planning the research approach for the question"
+        )["task_id"]
+        progress_tracker.start_task(self.session_id, planning_task_id)
         
-        # Ensure we initialize a session in the progress tracker
-        try:
-            from agents.progress_tracker import progress_tracker, ResearchStage
-            
-            if session_id is None:
-                # Create a session if one doesn't exist
-                session_result = progress_tracker.create_session()
-                if isinstance(session_result, dict) and 'session_id' in session_result:
-                    session_id = session_result['session_id']
-                else:
-                    # Handle string return type
-                    session_id = session_result
-                
-                # Initialize the session with the question
-                progress_tracker.initialize_session(session_id, research_question)
-            
-            # Store the session ID
-            self.session_id = session_id
-            
-        except Exception as e:
-            logging.error(f"Error initializing progress tracker: {str(e)}")
+        # First, let the supervisor plan the research with a clear token limit
+        planning_prompt = f"""
+You are coordinating a research task. The research question is:
 
-        # Start with a planning phase to determine domain 
-        planning_agent = CryptoAwareAgent(
-            name="Research Planner",
-            agent_id="research_planning_agent",
-            model=OpenAIChat(id=DEFAULT_MODEL_ID),
-            debug_mode=debug_mode
+{question}
+
+Please provide a detailed research plan with 3-5 subtopics to explore.
+Include specific questions to investigate for each subtopic.
+Keep your response under 1200 words.
+"""
+        
+        supervisor_response = self.supervisor_agent.chat(planning_prompt)
+        
+        progress_tracker.complete_task(
+            self.session_id, 
+            planning_task_id, 
+            "Research plan created"
         )
         
-        # Update progress tracker stage to PLANNING
-        if session_id:
-            try:
-                progress_tracker.update_stage(session_id, ResearchStage.PLANNING)
-            except Exception as e:
-                logging.error(f"Error updating progress tracker stage: {str(e)}")
+        # Extract the research plan
+        research_plan = supervisor_response.content
+        logging.info(f"Research plan: {research_plan}")
         
-        # Detect if this is crypto-related
-        planning_prompt = f"""
-        Create a brief research plan for the following research question:
+        # Update stage to data collection
+        progress_tracker.update_stage(self.session_id, ResearchStage.DATA_COLLECTION)
         
-        RESEARCH QUESTION: {research_question}
+        # Parse research plan to extract subtopics (simplified approach)
+        topics = self._extract_topics_from_plan(research_plan)
         
-        Your plan should include:
-        1. Domain identification - What domain does this question fall into? (e.g., finance, cryptocurrency, technology, etc.)
-        2. Key aspects to investigate
-        3. 3-5 specific search queries that would help answer this question
+        # Limit to at most 4 topics to avoid token limit issues
+        topics = topics[:min(len(topics), 4)]
         
-        Format your response as:
-        
-        DOMAIN: [specific domain]
-        KEY ASPECTS:
-        - [aspect 1]
-        - [aspect 2]
-        - [aspect 3]
-        
-        SEARCH QUERIES:
-        1. [query 1]
-        2. [query 2]
-        3. [query 3]
-        """
-        
-        try:
-            # Run the planning agent
-            planning_result = run_with_retry(planning_agent, planning_prompt)
+        # Research each topic
+        topic_results = []
+        for i, topic in enumerate(topics):
+            # Add task for this topic
+            topic_task_id = progress_tracker.add_task(
+                self.session_id,
+                f"Researching: {topic[:50]}...",
+                f"Collecting information on subtopic {i+1}/{len(topics)}"
+            )["task_id"]
+            progress_tracker.start_task(self.session_id, topic_task_id)
             
-            # Add planning as first task and mark complete
-            planning_task_id = progress_tracker.add_task(
-                session_id, "Research Planning", 
-                "Create structured research plan with domain identification")
-            progress_tracker.start_task(session_id, planning_task_id["task_id"])
-            progress_tracker.complete_task(session_id, planning_task_id["task_id"], planning_result)
+            # Create a fresh researcher agent for each topic
+            researcher = self.researcher_agent_factory(tools=self.tools)
             
-            # Try to parse the domain from the result
-            if "DOMAIN:" in planning_result:
-                domain_line = planning_result.split("DOMAIN:")[1].split("\n")[0].strip()
-                domain = domain_line.lower()
-                
-                # Check if this is crypto-related
-                crypto_terms = [
-                    "crypto", "bitcoin", "ethereum", "blockchain", "nft", "token", 
-                    "web3", "defi", "dao", "smart contract", "mining", "wallet", 
-                    "exchange", "swap", "dex", "ordinals", "coin", "btc", "eth", 
-                    "sol", "solana", "trading", "yield", "memecoin", "gas", "gas fee",
-                    "tap protocol", "dmf", "nat token", "snat", "tap", "TAP", "TAP Protocol",
-                    "protocol", "digital matter theory", "dmt", "bitcoin ordinals",
-                    "bitcoin runes", "runes", "ordinal", "inscription", "brc-20",
-                    "bitcoin ecosystem", "bitcoin layers", "bitcoin nft", "bitcoin token",
-                    "satoshi", "sats", "proof of work", "proof of stake", "pow", "pos",
-                    "consensus", "validator", "staking", "mining", "cryptocurrency",
-                    "digital asset", "blockchain technology", "decentralized"
-                ]
-                
-                if any(term in domain or term in research_question.lower() for term in crypto_terms):
-                    is_crypto = True
-                    domain = "cryptocurrency"
-                
-                # Special case for ticker-like patterns (e.g., BTC, ETH, SOL)
-                crypto_tickers = ["BTC", "ETH", "SOL", "XRP", "ADA", "DOT", "AVAX", "TAP", "NAT", "TRAC", "DMT"]
-                for ticker in crypto_tickers:
-                    if ticker in research_question or f"{ticker}-USD" in research_question:
-                        is_crypto = True
-                        domain = "cryptocurrency"
-                        break
-                
-                # Enhanced TAP Protocol detection
-                tap_indicators = ["tap protocol", "TAP Protocol", "TAP protocol", "tap bitcoin", "TAP bitcoin"]
-                if any(indicator in research_question.lower() for indicator in tap_indicators):
-                    is_crypto = True
-                    domain = "cryptocurrency"
-                    logging.info("Detected TAP Protocol - classifying as cryptocurrency")
-                    
-                # Force protocol-related queries in Bitcoin context to be crypto
-                if "protocol" in research_question.lower() and ("bitcoin" in research_question.lower() or "btc" in research_question.lower()):
-                    is_crypto = True
-                    domain = "cryptocurrency"
-                    logging.info("Detected Bitcoin protocol query - classifying as cryptocurrency")
+            # Execute research on this topic with clear token limit guidance
+            logging.info(f"Researching topic: {topic}")
+            researcher_prompt = f"""
+Please research the following topic thoroughly:
+
+{topic}
+
+This is part of a larger research question: {question}
+
+IMPORTANT CONSTRAINTS:
+1. Keep your response under {chunk_size} tokens
+2. Focus on high-quality information rather than quantity
+3. Use Tavily search exclusively for web information
+4. Cite all sources properly with URLs
+
+Provide detailed findings with proper citations to sources.
+"""
+            researcher_response = researcher.chat(researcher_prompt)
             
-            # Log the generated plan
-            logging.info(f"Research plan generated. Domain: {domain}, Is crypto: {is_crypto}")
-            logging.debug(f"Full research plan: {planning_result}")
-            
-        except Exception as e:
-            logging.error(f"Error during planning phase: {str(e)}")
-            # Default to general domain if planning fails
-            domain = "general"
-            is_crypto = False
-        
-        # Store the domain in our progress tracker
-        if session_id:
-            try:
-                progress_tracker.update_meta(
-                    session_id, 
-                    {
-                        "domain": domain,
-                        "is_crypto": is_crypto
-                    }
-                )
-            except Exception as e:
-                logging.error(f"Error updating progress tracker metadata: {str(e)}")
-        
-        # Store domain in agent state for tool selection
-        self.state = {
-            "domain": domain,
-            "is_crypto": is_crypto,
-            "session_id": session_id
-        }
-        
-        # ========================
-        # STRUCTURED RESEARCH IMPLEMENTATION - MULTI-AGENT WORKFLOW
-        # ========================
-        try:
-            # 1. SETUP SUPERVISOR AGENT
-            # Create a supervisor agent if not already provided
-            if not self.supervisor_agent:
-                self.supervisor_agent = create_supervisor_agent(
-                    model_id=DEFAULT_MODEL_ID,
-                    user_id=self.user_id,
-                    session_id=session_id
-                )
-                
-            # Update progress tracker with research stage
-            if session_id:
-                progress_tracker.update_stage(session_id, ResearchStage.RESEARCH)
-            
-            # 2. RESEARCH PLANNING WITH SUPERVISOR
-            planning_task_id = progress_tracker.add_task(
-                session_id, 
-                "Research Component Planning", 
-                "Break down research question into specific components"
-            )
-            progress_tracker.start_task(session_id, planning_task_id["task_id"])
-            
-            # Have the supervisor create a comprehensive research plan
-            planning_prompt = f"""
-            I need you to create a comprehensive research plan for this question:
-            
-            RESEARCH QUESTION: {research_question}
-            
-            DOMAIN: {domain}
-            SPECIAL CONSIDERATIONS: {"This is a cryptocurrency topic. Focus on blockchain technology, tokens, and crypto markets." if is_crypto else ""}
-            
-            Create a structured research plan with:
-            1. 3-5 specific research components to investigate
-            2. Specific sub-questions for each component
-            3. A logical sequence for conducting the research
-            
-            Use your research_planning tool to create a detailed research plan.
-            """
-            
-            planning_response = run_with_retry(self.supervisor_agent, planning_prompt)
-            progress_tracker.complete_task(session_id, planning_task_id["task_id"], result=planning_response)
-            
-            # 3. COMPONENT RESEARCH WITH MULTIPLE RESEARCHER AGENTS
-            # Extract components from the plan (simplified approach)
-            components = []
-            if "recommended_approach" in planning_response and "suggested_structure" in planning_response:
-                # If using the research_planning tool format
-                structure = planning_response["recommended_approach"]["suggested_structure"]
-                components = [{"name": k, "description": v} for k, v in structure.items()]
-            else:
-                # Fallback to simple parsing - find research components from the text
-                import re
-                component_matches = re.findall(r'Component \d+: ([^\n]+)', planning_response)
-                if component_matches:
-                    components = [{"name": match, "description": match} for match in component_matches]
-                else:
-                    # Default components if parsing fails
-                    components = [
-                        {"name": "Background Information", "description": "Historical and contextual information"},
-                        {"name": "Current Status", "description": "Present state and recent developments"},
-                        {"name": "Analysis", "description": "Critical analysis of key aspects"},
-                        {"name": "Future Implications", "description": "Potential future developments and significance"}
-                    ]
-            
-            # Create and execute research tasks for each component
-            component_results = []
-            for i, component in enumerate(components[:5]):  # Limit to 5 components maximum
-                component_task_id = progress_tracker.add_task(
-                    session_id,
-                    f"Research: {component['name']}",
-                    component['description']
-                )
-                progress_tracker.start_task(session_id, component_task_id["task_id"])
-                
-                # Create a task ID
-                task_id = f"task-{i+1}-{component['name'].lower().replace(' ', '-')}"
-                
-                # Have the supervisor create and execute a specific research task
-                task_prompt = f"""
-                Create and execute a detailed research task for this component of our research:
-                
-                RESEARCH QUESTION: {research_question}
-                COMPONENT: {component['name']} - {component['description']}
-                DOMAIN: {domain} {"(CRYPTOCURRENCY)" if is_crypto else ""}
-                
-                Use the create_research_task tool to create a task with ID "{task_id}", then
-                use execute_research_task to get results. 
-                
-                The research should be thorough and provide detailed, well-cited information.
-                """
-                
-                # Execute the research for this component
-                component_result = run_with_retry(self.supervisor_agent, task_prompt)
-                component_results.append({
-                    "component": component['name'],
-                    "result": component_result
-                })
-                
-                # Mark this component as complete
-                progress_tracker.complete_task(session_id, component_task_id["task_id"], 
-                                             result=f"Completed research on {component['name']}")
-            
-            # 4. SYNTHESIS AND REPORT GENERATION
-            if session_id:
-                progress_tracker.update_stage(session_id, ResearchStage.REPORT_GENERATION)
-            
-            synthesis_task_id = progress_tracker.add_task(
-                session_id,
-                "Final Report Generation",
-                "Synthesize all research components into a comprehensive final report"
-            )
-            progress_tracker.start_task(session_id, synthesis_task_id["task_id"])
-            
-            # Prepare data for the report
-            sections_data = []
-            for result in component_results:
-                # Extract the relevant content, handle different formats
-                content = ""
-                if isinstance(result["result"], dict) and "results" in result["result"]:
-                    content = result["result"]["results"]
-                elif isinstance(result["result"], str):
-                    content = result["result"]
-                else:
-                    content = str(result["result"])
-                
-                sections_data.append({
-                    "heading": result["component"],
-                    "content": content
-                })
-                
-            # Convert sections to JSON string for the generate_research_report tool
-            import json
-            sections_json = json.dumps(sections_data)
-            
-            # Have the supervisor generate the final report
-            report_prompt = f"""
-            Generate a comprehensive final research report on this topic:
-            
-            RESEARCH QUESTION: {research_question}
-            DOMAIN: {domain} {"(CRYPTOCURRENCY)" if is_crypto else ""}
-            
-            Use the generate_research_report tool with these parameters:
-            - title: A descriptive title for the research report
-            - sections: The JSON data containing all research sections
-            - format_style: "academic"
-            - include_visualizations: true
-            
-            Here's the sections JSON to use:
-            {sections_json}
-            
-            The report should be comprehensive, well-structured, and maintain academic rigor with proper citations.
-            """
-            
-            # Generate the final report
-            final_report = run_with_retry(self.supervisor_agent, report_prompt)
-            
-            # Extract the report text from the response
-            report_text = ""
-            if isinstance(final_report, dict) and "report" in final_report:
-                report_text = final_report["report"]
-            elif isinstance(final_report, str):
-                report_text = final_report
-            else:
-                report_text = str(final_report)
-                
-            # Store the final report in the session data
-            progress_tracker.store_session_data(session_id, {
-                "final_report": report_text,
-                "components": component_results,
-                "domain": domain,
-                "is_crypto": is_crypto
+            # Store results
+            topic_results.append({
+                "topic": topic,
+                "findings": researcher_response.content,
             })
             
-            # Mark synthesis task as complete
-            progress_tracker.complete_task(session_id, synthesis_task_id["task_id"], 
-                                         result="Completed final research report")
+            progress_tracker.complete_task(
+                self.session_id,
+                topic_task_id,
+                "Research completed for subtopic"
+            )
             
-            # Mark the overall session as complete
-            progress_tracker.update_stage(session_id, ResearchStage.COMPLETE)
-            progress_tracker.complete_session(session_id)
-            
-            return {
-                "status": "success",
-                "session_id": session_id,
-                "report": report_text,
-                "domain": domain,
-                "is_crypto": is_crypto
-            }
-            
-        except Exception as e:
-            logging.error(f"Error during research execution: {str(e)}")
-            if session_id:
-                progress_tracker.update_stage(session_id, ResearchStage.ERROR)
-                error_task_id = progress_tracker.add_task(
-                    session_id,
-                    "Research Error",
-                    f"Error during research: {str(e)}"
-                )
-                progress_tracker.start_task(session_id, error_task_id["task_id"])
-                progress_tracker.complete_task(session_id, error_task_id["task_id"], 
-                                             result=f"Research failed: {str(e)}")
-                
-            return {
-                "status": "error",
-                "error": str(e),
-                "session_id": session_id
-            }
-
-# Add this helper function at the top of the file
-def run_with_retry(agent, prompt, max_attempts=5):
-    """Run an agent with retry logic for rate limit errors"""
-    @retry(
-        stop=stop_after_attempt(max_attempts),
-        wait=wait_exponential(multiplier=1, min=2, max=60),
-        retry=retry_if_exception_type((RateLimitError, APIError, APIConnectionError)),
-        before_sleep=before_sleep_log(logging.getLogger(), logging.WARNING)
-    )
-    def _run_with_retry():
-        try:
-            return agent.run(prompt)
-        except Exception as e:
-            if "rate limit" in str(e).lower():
-                logging.warning(f"Rate limit hit, retrying: {str(e)}")
-                raise RateLimitError(f"OpenAI rate limit: {str(e)}")
-            elif "api" in str(e).lower() and ("error" in str(e).lower() or "connection" in str(e).lower()):
-                logging.warning(f"API error, retrying: {str(e)}")
-                raise APIError(f"OpenAI API error: {str(e)}")
-            else:
-                raise e
-    
-    try:
-        result = _run_with_retry()
+            # Track token usage
+            if hasattr(researcher, "token_usage"):
+                self.token_usage.add_tracker(researcher.token_usage)
         
-        # Handle different return types
-        if hasattr(result, 'content'):
-            # If it's a RunResponse or similar object with content attribute
-            return result.content
-        else:
-            # If it's already a string or dict or other value
-            return result
-    except tenacity.RetryError as e:
-        # If all retries failed, return a simple error string
-        logging.error(f"All retries failed: {str(e)}")
-        return f"Error after {max_attempts} retries: {str(e.last_attempt.exception())}"
+        # Update stage to analysis and synthesis
+        progress_tracker.update_stage(self.session_id, ResearchStage.ANALYSIS)
+        
+        # Add analysis task
+        analysis_task_id = progress_tracker.add_task(
+            self.session_id,
+            "Analyzing Research Findings",
+            "Analyzing and synthesizing findings from all subtopics"
+        )["task_id"]
+        progress_tracker.start_task(self.session_id, analysis_task_id)
+        
+        # Process topic results one by one to avoid token limits
+        total_findings = ""
+        for i, result in enumerate(topic_results):
+            synthesis_prompt = f"""
+You're analyzing research on: {question}
 
-# Define custom exceptions for retry logic
-class RateLimitError(Exception):
-    """Rate limit error from OpenAI"""
-    pass
+Here is research on subtopic {i+1}/{len(topic_results)}:
+Topic: {result['topic']}
 
-class APIError(Exception):
-    """Generic API error from OpenAI"""
-    pass
+Findings:
+{result['findings']}
 
-class APIConnectionError(Exception):
-    """API connection error from OpenAI"""
-    pass
+Please synthesize the key points from these findings in 400 words or less.
+Focus on extracting the most important insights relevant to the main question.
+"""
+            synthesis_response = self.supervisor_agent.chat(synthesis_prompt)
+            total_findings += f"\n\n## {result['topic']}\n\n{synthesis_response.content}"
+        
+        progress_tracker.complete_task(
+            self.session_id,
+            analysis_task_id,
+            "Analysis completed"
+        )
+        
+        # Update stage to report generation
+        progress_tracker.update_stage(self.session_id, ResearchStage.REPORT_GENERATION)
+        
+        # Add report generation task
+        report_task_id = progress_tracker.add_task(
+            self.session_id,
+            "Generating Research Report",
+            "Creating the final comprehensive research report"
+        )["task_id"]
+        progress_tracker.start_task(self.session_id, report_task_id)
+        
+        # Generate final report with clear token limit guidance
+        final_report_prompt = f"""
+Based on your analysis of the research findings, please create a comprehensive final report for the question:
+
+{question}
+
+IMPORTANT CONSTRAINTS:
+1. Keep your total response under 8000 tokens
+2. Focus on quality over quantity
+3. Ensure the report is well-structured and flows logically
+
+Here's the synthesized research findings to use:
+{total_findings}
+
+The report should include:
+1. An executive summary (200 words max)
+2. Key findings (concise bullet points)
+3. Detailed analysis organized by topic
+4. Conclusions and implications
+5. Citations for all sources used
+
+Ensure the report is well-structured, insightful, and properly cited.
+"""
+        
+        final_report_response = self.supervisor_agent.chat(final_report_prompt)
+        
+        progress_tracker.complete_task(
+            self.session_id,
+            report_task_id,
+            "Report generation completed"
+        )
+        
+        # Update stage to complete
+        progress_tracker.update_stage(self.session_id, ResearchStage.COMPLETE)
+        
+        # Store report data for later retrieval
+        progress_tracker.store_session_data(self.session_id, {
+            "report": final_report_response.content,
+            "topics_researched": [r["topic"] for r in topic_results],
+            "token_usage": self.token_usage.get_usage(),
+            "time_taken_seconds": time.time() - start_time
+        })
+        
+        progress_tracker.complete_session(self.session_id)
+        
+        # Track token usage from supervisor
+        if hasattr(self.supervisor_agent, "token_usage"):
+            self.token_usage.add_tracker(self.supervisor_agent.token_usage)
+        
+        # Calculate total time
+        end_time = time.time()
+        time_taken = end_time - start_time
+        
+        # Return the final report and metadata
+        return {
+            "question": question,
+            "report": final_report_response.content,
+            "research_plan": research_plan,
+            "topics_researched": [r["topic"] for r in topic_results],
+            "token_usage": self.token_usage.get_usage(),
+            "time_taken_seconds": time_taken,
+            "session_id": self.session_id
+        }
+    
+    def _extract_topics_from_plan(self, research_plan: str) -> List[str]:
+        """Extract research topics from the supervisor's research plan"""
+        # This is a simplified approach - in production you'd want more robust parsing
+        lines = research_plan.split("\n")
+        topics = []
+        
+        current_topic = []
+        for line in lines:
+            # Look for topic headers (common formats in research plans)
+            if any(line.strip().startswith(marker) for marker in ["#", "Topic", "Subtopic", "Research Area"]):
+                if current_topic:
+                    topics.append("\n".join(current_topic))
+                    current_topic = []
+                current_topic.append(line.strip())
+            elif current_topic:
+                current_topic.append(line.strip())
+        
+        # Add the last topic if there is one
+        if current_topic:
+            topics.append("\n".join(current_topic))
+        
+        # If no topics were found with the markers, fall back to splitting by newlines
+        if not topics:
+            # Use non-empty lines as potential topics
+            topics = [line.strip() for line in lines if line.strip() and len(line.strip()) > 10]
+        
+        return topics[:min(len(topics), 5)]  # Limit to at most 5 topics for efficiency

@@ -12,8 +12,7 @@ from agents.selector import AgentType, get_agent, get_available_agents, get_agen
 from agents.deep_research_agent import (
     DeepResearchAgent, 
     create_supervisor_agent,
-    create_researcher_agent,
-    DEFAULT_MODEL_ID
+    create_researcher_agent
 )
 from api.models import ResearchRequest, PlaygroundStatus
 from agents.progress_tracker import progress_tracker, ResearchStage
@@ -29,6 +28,7 @@ agents_router = APIRouter(prefix="/agents", tags=["Agents"])
 
 class Model(str, Enum):
     gpt_4_1 = "gpt-4.1"
+    gpt_4_1_mini = "gpt-4.1-mini"
     o4_mini = "o4-mini"
 
 
@@ -148,22 +148,24 @@ class ResearchProgressRequest(BaseModel):
 @agents_router.get("/research/progress/{session_id}")
 async def get_research_progress(session_id: str):
     """
-    Get the current progress of a research task
+    Get the progress status of a research task
     """
     progress_data = progress_tracker.get_session_status(session_id)
     if "error" in progress_data:
         raise HTTPException(status_code=404, detail=progress_data["error"])
+    
     return progress_data
 
 @agents_router.get("/research/progress/{session_id}/details")
 async def get_detailed_research_progress(session_id: str):
     """
-    Get detailed progress information including history
+    Get detailed progress information of a research task including history
     """
-    details = progress_tracker.get_full_session_details(session_id)
-    if "error" in details:
-        raise HTTPException(status_code=404, detail=details["error"])
-    return details
+    progress_data = progress_tracker.get_full_session_details(session_id)
+    if "error" in progress_data:
+        raise HTTPException(status_code=404, detail=progress_data["error"])
+    
+    return progress_data
 
 @agents_router.post("/deep-research")
 async def execute_deep_research(request: ResearchRequest):
@@ -172,63 +174,52 @@ async def execute_deep_research(request: ResearchRequest):
     Returns a detailed report on the topic with cited sources.
     """
     try:
-        # Initialize the Deep Research Agent with proper components
-        from agents.deep_research_agent import DeepResearchAgent, create_supervisor_agent, create_researcher_agent
-        
-        # Create a supervisor agent for coordinating research
-        supervisor_agent = create_supervisor_agent(model_id=DEFAULT_MODEL_ID)
-        
-        # Initialize the full DeepResearchAgent
-        agent = DeepResearchAgent(
-            supervisor_agent=supervisor_agent,
-            researcher_agent_factory=create_researcher_agent,
-            model=DEFAULT_MODEL_ID
-        )
-        
-        # Set timeout to 5 minutes (300 seconds) if not specified
-        timeout = request.timeout_seconds or 300
-        
-        # Create a tracker session first to get a session ID
+        from agents.selector import get_deep_research_agent_instance
         from agents.progress_tracker import progress_tracker, ResearchStage
+        import asyncio
+        import logging
+        
+        # Initialize the Deep Research Agent
+        agent = get_deep_research_agent_instance()
+        
+        # Create session ID immediately
         session_id = progress_tracker.create_session()
+        agent.session_id = session_id
         
-        # Execute the research in a background thread
-        import threading
+        # Set initial stage
+        progress_tracker.update_stage(session_id, ResearchStage.PLANNING)
         
-        def run_research():
+        # Execute the research in the background
+        async def run_research():
             try:
-                # Execute the research with parameters and timeout
-                results = agent.execute_research(
-                    research_question=request.query,
-                    timeout_seconds=timeout,
-                    session_id=session_id,
-                    debug_mode=True  # Enable debug for more logging
-                )
+                logging.info(f"Starting research for session {session_id}: {request.query}")
                 
-                # Research is complete at this point
-                logger.info(f"Research completed for session {session_id}")
+                # Execute the research with the query
+                results = agent.execute_research(request.query)
+                
+                logging.info(f"Research completed for session {session_id}")
                 
             except Exception as e:
-                # Log any errors that occur during research
-                logger.exception(f"Error in background research task: {e}")
-                progress_tracker.update_stage(session_id, ResearchStage.ERROR)
+                logging.exception(f"Error in background research task for session {session_id}: {e}")
+                # Update progress to indicate error
+                progress_tracker.update_stage(session_id, ResearchStage.COMPLETE)
                 progress_tracker.add_task(
                     session_id, 
                     "Error", 
                     f"Research failed: {str(e)}"
                 )
+                # Complete the session with error
                 progress_tracker.complete_session(session_id)
         
-        # Start the research in a background thread
-        research_thread = threading.Thread(target=run_research)
-        research_thread.daemon = True  # Allow the thread to be terminated when the main thread exits
-        research_thread.start()
+        # Start the background task
+        asyncio.create_task(run_research())
         
-        # Return the session ID immediately so client can track progress
+        # Return the session ID immediately
         return {
             "session_id": session_id,
-            "message": "Research started successfully. Track progress at /agents/research/progress/{session_id}",
-            "status": "in_progress"
+            "message": "Research started successfully. Use the progress endpoint to track status.",
+            "progress_url": f"/research/progress/{session_id}",
+            "report_url": f"/research/report/{session_id}"
         }
         
     except Exception as e:
@@ -263,20 +254,33 @@ async def get_research_report(session_id: str):
                 "progress_percentage": progress_data["progress_percentage"]
             }
     
-    # Get the session data which should contain the final report
+    # Get the session data where we stored the report
     session_data = progress_tracker.get_session_data(session_id)
-    if not session_data or "final_report" not in session_data:
-        return {
-            "status": "incomplete",
-            "message": "Research is complete but no final report was generated. There may have been an error during report generation."
-        }
+    if not session_data or "report" not in session_data:
+        # Check if this is an older session without stored report
+        from agents.selector import get_deep_research_agent_instance
+        
+        # Try to retrieve the report from agent's memory
+        try:
+            agent = get_deep_research_agent_instance()
+            if hasattr(agent, "memory") and agent.memory:
+                # Attempt to retrieve the report from memory
+                return {
+                    "status": "complete",
+                    "report": "Report could not be retrieved from memory. Please run the research again."
+                }
+        except Exception as e:
+            logger.exception(f"Error retrieving report from memory: {e}")
+            return {
+                "status": "error",
+                "message": "Could not retrieve the report. It may have exceeded token limits or timed out."
+            }
     
-    # Return the full research report with metadata
+    # Return the report
     return {
         "status": "complete",
-        "report": session_data["final_report"],
-        "domain": session_data.get("domain", "unknown"),
-        "is_crypto": session_data.get("is_crypto", False),
-        "components": session_data.get("components", []),
-        "session_id": session_id
+        "report": session_data.get("report", "Report not found"),
+        "topics_researched": session_data.get("topics_researched", []),
+        "time_taken_seconds": session_data.get("time_taken_seconds"),
+        "token_usage": session_data.get("token_usage")
     }
